@@ -76,25 +76,39 @@ function post(c: Conv, from: string, text: string, activity?: Item[], hop?: numb
   return m;
 }
 
-// Deliver everything the agent hasn't seen in this conversation, run one turn, post the reply.
+// Deliver everything the agent hasn't seen in this conversation, run a turn, post the reply.
+// In rooms, if new messages land while the agent is drafting, the draft is held and the agent re-reads everything
+// (pass 2) before posting a revised reply or staying silent, so it never answers without having taken in the latest.
+const fmtMsgs = (ms: Msg[]) => ms.map((m) => `[${m.from}] ${m.text}`).join("\n");
 async function deliver(c: Conv, agent: string): Promise<string | null> {
-  const unseen = c.messages.filter((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent);
-  if (!unseen.length) return null;
-  const upto = c.messages.at(-1)!.seq;
-  const hop = Math.max(...unseen.map((m) => m.hop ?? 0)) + 1; // how many agent-to-agent steps deep this reply is
-  const transcript = unseen.map((m) => `[${m.from}] ${m.text}`).join("\n");
-  const text = c.kind === "room"
-    ? `You are in the chat room "${c.title}" (members: user, ${c.members.join(", ")}). Messages you haven't seen:\n${transcript}\n\nOther members are replying at the same time as you, and their messages show up here as context. Your reply is posted to the whole room. Reply only if you have something new to add; do not reply just to agree or acknowledge. Otherwise reply exactly NO_REPLY.`
-    : transcript;
+  const unseenOf = () => c.messages.filter((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent);
+  if (!unseenOf().length) return null;
   emit({ type: "typing", conv: c.id, agent, on: true });
   const items: Item[] = [];
+  const onEvent = (e: any) => {
+    if (e.kind === "tool") { const item = { id: e.id, name: e.name, input: summarize(e.input) }; items.push(item); emit({ type: "activity", conv: c.id, agent, item }); }
+    else if (e.kind === "tool_result") { const it = items.find((x) => x.id === e.id); if (it) { it.result = e.preview; it.ok = e.ok; emit({ type: "activity", conv: c.id, agent, update: { id: e.id, result: e.preview, ok: e.ok } }); } }
+  };
   try {
-    const reply = (await turn(agents[agent], { from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conversation: c.id }, (e) => {
-      if (e.kind === "tool") { const item = { id: e.id, name: e.name, input: summarize(e.input) }; items.push(item); emit({ type: "activity", conv: c.id, agent, item }); }
-      else if (e.kind === "tool_result") { const it = items.find((x) => x.id === e.id); if (it) { it.result = e.preview; it.ok = e.ok; emit({ type: "activity", conv: c.id, agent, update: { id: e.id, result: e.preview, ok: e.ok } }); } }
-    })).trim();
-    c.cursor[agent] = upto;
-    if (reply && reply !== "NO_REPLY") route(c, post(c, agent, reply, items, hop));
+    let draft = "", reply = "";
+    for (let pass = 0; pass < 2; pass++) {
+      const unseen = unseenOf();
+      if (!unseen.length) break;
+      const upto = c.messages.at(-1)!.seq, hop = Math.max(...unseen.map((m) => m.hop ?? 0)) + 1;
+      const earlier = c.messages.filter((m) => m.seq <= (c.cursor[agent] ?? 0) && m.from !== "system").slice(-10);
+      let text = fmtMsgs(unseen);
+      if (c.kind === "room") {
+        text = pass === 0
+          ? `You are in the chat room "${c.title}" (members: user, ${c.members.join(", ")}), a live group chat like a team Slack channel.\n\n${earlier.length ? `Earlier in the room (context):\n${fmtMsgs(earlier)}\n\n` : ""}New since you last looked:\n${text}\n\nFirst take in everything above, including what the other members have said, and understand where the discussion stands. Then decide whether you have something to contribute: answer questions, build on or push back on others' points, ask follow-ups (use @name to address someone), and move things toward what the user asked for. Avoid filler like "agreed" and don't repeat what was already said. If, having considered all of it, you have nothing to add right now, reply exactly NO_REPLY. Others may be drafting at the same moment as you.`
+          : `While you were drafting, new messages arrived:\n${text}\n\nYour unposted draft was:\n${draft}\n\nTaking everything now said into account, reply with your final message (revise your draft, or drop whatever has already been covered), or reply exactly NO_REPLY if it is now redundant.`;
+      }
+      reply = (await turn(agents[agent], { from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conversation: c.id }, onEvent)).trim();
+      c.cursor[agent] = upto;
+      const arrived = c.messages.some((m) => m.seq > upto && m.from !== agent && m.from !== "system");
+      if (c.kind === "room" && pass === 0 && reply && reply !== "NO_REPLY" && arrived) { draft = reply; continue; } // hold and reconsider
+      if (reply && reply !== "NO_REPLY") route(c, post(c, agent, reply, items, hop));
+      break;
+    }
     return reply;
   } catch (e) {
     post(c, "system", `${agent} failed: ${String(e).slice(0, 300)}`);
@@ -105,8 +119,9 @@ async function deliver(c: Conv, agent: string): Promise<string | null> {
 // ---- routing ----
 // Every posted message is delivered to every other member's session at the same moment. Each (conversation, agent)
 // has its own serial worker: if the agent is mid-turn, new messages are batched into its next turn (cursor-based),
-// so agents never wait on each other. Agent-to-agent chatter is capped at MAX_HOPS to prevent endless loops.
-const MAX_HOPS = 3;
+// so agents never wait on each other. Agent-to-agent discussion continues freely until a per-human-message budget
+// is spent (PER_AGENT replies each since the user last spoke), which bounds loops without cutting threads short.
+const PER_AGENT = Number(process.env.ORCIE_ROOM_REPLIES ?? 5);
 const running = new Set<string>(), dirty = new Set<string>();
 function kick(c: Conv, agent: string) {
   const k = `${c.id}|${agent}`;
@@ -126,7 +141,11 @@ function route(c: Conv, m: Msg) {
     const run = async () => { for (const a of targets) await deliver(c, a); };
     return void chains.set(c.id, (chains.get(c.id) ?? Promise.resolve()).then(run, run));
   }
-  if (fromAgent && (m.hop ?? 0) >= MAX_HOPS) return; // stop agent-to-agent chains; they still see it next time they run
+  if (fromAgent) { // budget: agent messages since the user last spoke, in total and for this author
+    const lastUser = c.messages.findLastIndex((x) => x.from === "user");
+    const since = c.messages.slice(lastUser + 1).filter((x) => x.from !== "user" && x.from !== "system");
+    if (since.length >= PER_AGENT * c.members.length || since.filter((x) => x.from === m.from).length >= PER_AGENT) return; // they still see it next time they run
+  }
   targets.forEach((a) => kick(c, a));
 }
 

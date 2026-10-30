@@ -67,7 +67,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 .pop .row{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:6px;cursor:pointer;color:var(--fg);font-size:14px}
 .pop .row:hover,.pop .row.sel{background:var(--link);color:#fff}
 #scroller{flex:1;overflow:auto;padding:12px 0 8px;position:relative}
-.day{display:flex;align-items:center;margin:14px 20px 6px;position:sticky;top:0;z-index:2}
+.day{display:flex;align-items:center;margin:14px 0 6px;padding:4px 20px;position:sticky;top:0;z-index:2;background:var(--bg)}
 .day:before,.day:after{content:"";flex:1;border-top:1px solid var(--line)}
 .day span{border:1px solid var(--line);background:var(--bg);border-radius:16px;padding:2px 14px;font-size:13px;font-weight:700;margin:0 10px}
 .newdiv{display:flex;align-items:center;margin:10px 20px;color:var(--new);font-size:12px;font-weight:700}
@@ -105,10 +105,17 @@ details.act[open]>summary{background:var(--card)}
 .tool .res{color:var(--mute);white-space:pre-wrap;overflow-wrap:anywhere;margin-top:4px;max-height:110px;overflow:auto;border-top:1px dashed var(--line);padding-top:4px}
 .tool .res.bad{color:var(--badge)}
 .tool.run{border-left-color:#ecb22e}.tool.run .nm:after{content:" …";animation:blink 1s infinite}
-#live{padding:0 20px;flex-shrink:0;max-height:34vh;overflow:auto}
-.lv{display:flex;gap:8px;margin:2px 0 6px;font-size:13px;color:var(--mute)}
-.lv .dots{display:inline-flex;gap:3px;align-items:center;margin:0 2px}
-.lv summary b{color:var(--fg)}
+#live{padding:6px 0 18px}
+.lv{display:flex;gap:8px;padding:6px 20px;align-items:flex-start}
+.lv .card{flex:1;min-width:0;max-width:640px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--card)}
+.lv .hd{display:flex;align-items:center;gap:8px;font-size:14px}
+.lv .hd b{color:var(--fg)}.lv .hd .sub{color:var(--mute)}
+.lv .pulse{width:8px;height:8px;border-radius:50%;background:#ecb22e;animation:blink 1.1s infinite}
+.lv .dots{display:inline-flex;gap:3px;align-items:center}
+.lv details.act{margin-top:6px}
+.lv details.act>summary{background:var(--bg)}
+.lv .tool{margin-left:0}
+.draftmark{font-size:12px;opacity:.75}
 
 /* composer */
 #comp{margin:0 20px 18px;border:1px solid #868686;border-radius:10px;background:var(--bg);flex-shrink:0;position:relative}
@@ -176,8 +183,7 @@ dialog .btn:disabled{opacity:.6}
   <div id="hdr"><div class="title">Orcie</div></div>
   <div id="scroller"><div class="empty"><div><div style="font-size:48px">🐳</div><h2>Welcome to Orcie</h2>Hire an agent or create a room from the sidebar.</div></div></div>
   <button class="jump" id="jump"><svg class="ic" style="vertical-align:-4px;margin-right:4px"><use href="#i-down"/></svg>Jump to latest</button>
-  <div id="live"></div>
-  <div id="comp" class="off">
+    <div id="comp" class="off">
     <div class="pop" id="mpop"></div>
     <textarea id="txt" rows="1" placeholder="Message" disabled></textarea>
     <div class="bar">
@@ -235,10 +241,11 @@ const $ = (id) => document.getElementById(id);
 const ic = (n, c = "") => `<svg class="ic ${c}"><use href="#i-${n}"/></svg>`;
 let state = { agents: [], conversations: [] }, cur = null, conv = null;
 let typing = {}, live = {};            // typing[conv][agent]=bool, live[conv][agent]=tool items for the turn in progress
-let readAt = {}, closed = {};          // readAt[conv]=message count when last read
+let readAt = {}, closed = {}, drafts = {};          // readAt[conv]=message count when last read
 let firstVisit = false;
-try { firstVisit = !localStorage.orcieRead; readAt = JSON.parse(localStorage.orcieRead || "{}"); closed = JSON.parse(localStorage.orcieClosed || "{}"); } catch {}
-const persist = () => { try { localStorage.orcieRead = JSON.stringify(readAt); localStorage.orcieClosed = JSON.stringify(closed); } catch {} };
+try { firstVisit = !localStorage.orcieRead; readAt = JSON.parse(localStorage.orcieRead || "{}"); closed = JSON.parse(localStorage.orcieClosed || "{}"); drafts = JSON.parse(localStorage.orcieDrafts || "{}"); } catch {}
+const persist = () => { try { localStorage.orcieRead = JSON.stringify(readAt); localStorage.orcieClosed = JSON.stringify(closed); localStorage.orcieDrafts = JSON.stringify(drafts); } catch {} };
+function saveDraft() { if (!cur) return; const v = txt.value; if (v.trim()) drafts[cur] = v; else delete drafts[cur]; persist(); }
 
 const colors = ["#e01e5a","#2eb67d","#e8912d","#36c5f0","#7c3aed","#0b7285","#a61e4d","#5f6caf"];
 const color = (n) => n === "user" ? "#616061" : colors[[...n].reduce((a, c) => a + c.charCodeAt(0), 0) % colors.length];
@@ -285,7 +292,7 @@ function section(id, title, addTitle, onAdd, items) {
   const list = el.querySelector(".list");
   items.forEach((i) => {
     const d = document.createElement("div"); d.className = "item" + (i.id === cur ? " on" : "") + (i.badge ? " unread" : "") + (i.busy ? " busy" : "");
-    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span><span class="dots"><i></i><i></i><i></i></span>` + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
+    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span><span class="dots"><i></i><i></i><i></i></span>` + (drafts[i.id] && i.id !== cur ? '<span class="draftmark" title="Unsent draft">✎</span>' : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
     d.onclick = () => open(i.id); list.append(d);
   });
   if (!items.length) { const e = document.createElement("div"); e.className = "item"; e.style.cursor = "default"; e.style.opacity = ".6"; e.textContent = "Nothing here yet"; list.append(e); }
@@ -367,38 +374,45 @@ function actEl(items, html, open) {
 const sc = $("scroller");
 const nearBottom = () => sc.scrollHeight - sc.scrollTop - sc.clientHeight < 100;
 function renderAll(newFrom) {
-  sc.innerHTML = "";
+  sc.innerHTML = ""; // drawLive() re-creates the pending-agents row afterwards
   if (!conv.messages.length) { sc.innerHTML = `<div class="empty"><div>${conv.kind === "room" ? "<h2># " + esc(conv.title) + "</h2>This is the start of the room. Everyone in it sees every message." : av(conv.members[0], "md").replace("md", "md") + "<h2>" + esc(conv.title) + "</h2>This is the start of your conversation."}</div></div>`; return; }
-  conv.messages.forEach((m, i) => sc.append(msgNode(m, conv.messages[i - 1], newFrom)));
+  conv.messages.forEach((m, i) => addNode(msgNode(m, conv.messages[i - 1], newFrom)));
   const nd = sc.querySelector(".newdiv"); nd ? nd.scrollIntoView({ block: "center" }) : (sc.scrollTop = sc.scrollHeight);
 }
 
 async function open(id) {
+  if (cur && id !== cur) { saveDraft(); drawNav(); }
   cur = id; conv = await api("/conversations/" + encodeURIComponent(id));
   const newFrom = conv.messages.find((m) => m.seq > (readAt[id] ?? 0) && m.from !== "user" && m.from !== "system")?.seq ?? null;
   const ro = id.includes("+"); $("comp").classList.toggle("off", ro); $("txt").disabled = ro;
   $("txt").placeholder = ro ? "Agent-to-agent conversations are read-only" : conv.kind === "room" ? `Message #${conv.title} — use @name to address one agent` : `Message ${conv.title}`;
-  renderAll(newFrom); drawLive(); drawHeader(); markRead(); updSend(); if (!ro) $("txt").focus();
+  txt.value = drafts[id] ?? ""; renderAll(newFrom); drawLive(); drawHeader(); markRead(); updSend(); if (!ro) txt.focus();
   $("jump").style.display = "none";
 }
 
 // ---- live "working" panel ----
+// Agents that are mid-turn appear as pending rows at the end of the message list (like a message being written).
 function drawLive() {
-  const box = $("live"), open = {}; box.querySelectorAll("details[data-a]").forEach((d) => (open[d.dataset.a] = d.open)); box.innerHTML = "";
+  let box = $("live"); const open = {};
+  if (box) box.querySelectorAll("details[data-a]").forEach((d) => (open[d.dataset.a] = d.open)); else { box = document.createElement("div"); box.id = "live"; }
+  const stick = nearBottom(); box.innerHTML = "";
   for (const a of Object.keys(typing[cur] || {}).filter((a) => typing[cur][a])) {
     const items = live[cur]?.[a] || [], row = document.createElement("div"); row.className = "lv";
-    const d = actEl(items, `<b>${esc(a)}</b> is working<span class="dots"><i></i><i></i><i></i></span>${items.length ? `· ${items.length} tool${items.length > 1 ? "s" : ""} — click to expand` : ""}`, open[a] ?? false);
-    d.dataset.a = a; d.classList.add("live"); row.innerHTML = av(a, "sm"); row.append(d); box.append(row);
+    row.innerHTML = av(a, "md") + `<div class="card"><div class="hd"><span class="pulse"></span><b>${esc(a)}</b><span class="sub">is working</span><span class="dots sub"><i></i><i></i><i></i></span></div></div>`;
+    if (items.length) { const d = actEl(items, `${ic("wrench")} ${items.length} tool${items.length > 1 ? "s" : ""} used so far`, open[a] ?? false); d.dataset.a = a; d.addEventListener("toggle", () => { sc.scrollTop = sc.scrollHeight; }); row.querySelector(".card").append(d); }
+    box.append(row);
   }
-  if (nearBottom()) sc.scrollTop = sc.scrollHeight;
+  sc.append(box); // keep it last
+  if (stick) sc.scrollTop = sc.scrollHeight;
 }
+const addNode = (node) => { const l = $("live"); l ? sc.insertBefore(node, l) : sc.append(node); };
 
 // ---- composer ----
 const txt = $("txt");
 const updSend = () => { $("send").disabled = !txt.value.trim() || !cur || cur.includes("+"); txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 240) + "px"; };
 async function submit() {
-  const text = txt.value.trim(); if (!text || !cur) return; txt.value = ""; updSend(); hideMention();
-  try { await api(`/conversations/${encodeURIComponent(cur)}/messages`, "POST", { text }); } catch (err) { toast(err.message); txt.value = text; updSend(); }
+  const text = txt.value.trim(); if (!text || !cur) return; txt.value = ""; saveDraft(); updSend(); hideMention();
+  try { await api(`/conversations/${encodeURIComponent(cur)}/messages`, "POST", { text }); } catch (err) { toast(err.message); txt.value = text; saveDraft(); updSend(); }
 }
 $("send").onclick = submit;
 document.querySelectorAll(".tb[data-wrap]").forEach((b) => (b.onclick = () => { const w = b.dataset.wrap, s = txt.selectionStart, e = txt.selectionEnd;
@@ -419,7 +433,7 @@ function mention() {
 }
 function pick(n) { const pos = txt.selectionStart, before = txt.value.slice(0, pos).replace(/@[a-z0-9-]*$/, "@" + n + " ");
   txt.value = before + txt.value.slice(pos); txt.selectionStart = txt.selectionEnd = before.length; hideMention(); txt.focus(); updSend(); }
-txt.oninput = () => { updSend(); mention(); };
+txt.oninput = () => { updSend(); mention(); saveDraft(); };
 txt.onkeydown = (e) => {
   if (mlist.length) {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); msel = (msel + (e.key === "ArrowDown" ? 1 : mlist.length - 1)) % mlist.length; return mention(); }
@@ -496,7 +510,7 @@ es.onmessage = (ev) => {
     if (e.conv === cur) {
       const stick = nearBottom() || e.msg.from === "user", prev = conv.messages.at(-1);
       conv.messages.push(e.msg); if (sc.querySelector(".empty")) sc.innerHTML = "";
-      sc.append(msgNode(e.msg, prev, null));
+      addNode(msgNode(e.msg, prev, null));
       if (stick) sc.scrollTop = sc.scrollHeight; else $("jump").style.display = "block";
       markRead();
     }
