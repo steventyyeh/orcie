@@ -1,0 +1,6 @@
+{
+  "name": "orcie",
+  "private": true,
+  "workspaces": ["server", "harness"],
+  "scripts": { "build": "npm run build --workspaces", "dev:server": "npm run dev -w server" }
+}
