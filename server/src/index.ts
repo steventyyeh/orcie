@@ -1,10 +1,14 @@
 import { createServer, type ServerResponse } from "node:http";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // Control plane (POC): agents are Docker containers; conversations/rooms are persisted in a JSON file.
 // Router rule (docs/DESIGN.md §6): a conversation's messages reach every agent member's session for that conversation.
-type Agent = { name: string; model: string; container: string; port: number; created: string };
+type Skill = { name: string; description: string; instructions: string };
+type Profile = { role: string; summary: string; systemPrompt: string; tools: { browser: boolean }; skills: Skill[]; memorySeed: string; resources: keyof typeof PRESETS; greeting?: string };
+type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
 type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number };
 type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential" };
@@ -13,6 +17,7 @@ const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
 const CREDS = process.env.ORCIE_CREDS ?? `${process.env.HOME}/.orcie/creds`;
 const IMAGE = "orcie-agent:dev";
+const PRESETS = { small: { cpus: "1", memory: "2g" }, standard: { cpus: "2", memory: "4g" }, large: { cpus: "4", memory: "8g" } } as const;
 const WEB = new URL("../../web/index.html", import.meta.url);
 
 const agents: Record<string, Agent> = existsSync(STORE) ? JSON.parse(readFileSync(STORE, "utf8")) : {};
@@ -41,19 +46,22 @@ const clients = new Set<ServerResponse>();
 const emit = (e: unknown) => clients.forEach((c) => c.write(`data: ${JSON.stringify(e)}\n\n`));
 
 // ---- agents (HR) ----
-function createAgent(name: string, model: string) {
+function createAgent(name: string, model: string, profile?: Profile) {
   if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
   if (!existsSync(`${CREDS}/.credentials.json`)) throw new Error(`no subscription login at ${CREDS}; run scripts/export-login.sh`);
   if (agents[name]) throw new Error(`agent ${name} exists`);
   const container = `orcie-${name}`;
   // Subscription login mounted from a private dir. No API key is ever set.
-  docker("run", "-d", "--name", container, "--restart", "unless-stopped", "--cpus", "2", "--memory", "4g",
+  const res = PRESETS[profile?.resources ?? "standard"] ?? PRESETS.standard;
+  docker("run", "-d", "--name", container, "--restart", "unless-stopped", "--cpus", res.cpus, "--memory", res.memory,
     "-v", `orcie-${name}-data:/data`, "-v", `${CREDS}:/creds`, "-p", "127.0.0.1:0:9090",
     "--add-host", "host.docker.internal:host-gateway",
-    "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_MODEL=${model}`, IMAGE);
-  agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString() };
+    "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_MODEL=${model}`,
+    ...(profile ? ["-e", `ORCIE_PROFILE=${Buffer.from(JSON.stringify(profile)).toString("base64")}`] : []), IMAGE);
+  agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(profile ? { profile } : {}) };
   saveAgents();
-  ensureConv(`dm:${name}`, "dm", name, [name]);
+  const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
+  if (profile) post(dm, "system", `${name} was onboarded as ${profile.role}: ${profile.skills.length} skill${profile.skills.length === 1 ? "" : "s"}, ${profile.tools.browser ? "browser enabled" : "no browser"}, ${profile.resources} resources.`);
   emit({ type: "state" });
   return agents[name];
 }
@@ -122,6 +130,41 @@ function route(c: Conv, m: Msg) {
   targets.forEach((a) => kick(c, a));
 }
 
+// ---- onboarding (Agent HR) ----
+// A tool-less Claude call interviews the manager about the agent's purpose, then drafts the profile.
+const clean = (p: any): Profile => ({
+  role: String(p.role ?? "Assistant").slice(0, 80), summary: String(p.summary ?? "").slice(0, 400),
+  systemPrompt: String(p.systemPrompt ?? "").slice(0, 8000), tools: { browser: p.tools?.browser !== false },
+  skills: (Array.isArray(p.skills) ? p.skills : []).slice(0, 6).map((s: any) => ({ name: String(s.name ?? "skill").slice(0, 40), description: String(s.description ?? "").slice(0, 300), instructions: String(s.instructions ?? "").slice(0, 6000) })),
+  memorySeed: String(p.memorySeed ?? "").slice(0, 4000), resources: p.resources in PRESETS ? p.resources : "standard", greeting: p.greeting ? String(p.greeting).slice(0, 400) : undefined,
+});
+const hrPrompt = (name: string, model: string, history: { role: string; text: string }[]) => {
+  const answers = history.filter((h) => h.role === "user").length;
+  return `You are the HR onboarding specialist for an AI-agent platform. Each agent is a Claude CLI instance in its own Docker container with a shell, file access, persistent memory, optional headless-browser tool (Playwright), and optional skills (SKILL.md playbooks). You are onboarding a new agent named "${name}" (model ${model}). Interview the human manager to learn what the agent is for.
+
+Rules:
+- Ask ONE short question at a time covering: purpose, typical tasks, systems/sites/tools it needs, tone/style, hard boundaries. At most 4 questions in total.
+- When you have enough, or the manager says they are done${answers >= 4 ? " (you have asked enough already: output the profile NOW)" : ""}, reply with ONLY a JSON object inside a \`\`\`json block with keys: role (short title), summary (one sentence), systemPrompt (markdown instructions to the agent in second person: specific duties, workflow, tone, boundaries), tools ({"browser": boolean}), skills (1-4 items of {name (kebab-case), description (when to use it), instructions (markdown steps)}), memorySeed (markdown facts the agent should always remember), resources ("small" | "standard" | "large"), greeting (one sentence the agent says when introduced).
+- Otherwise reply with ONLY your next question as plain text. No preamble.
+
+Conversation so far:
+${history.map((h) => `${h.role === "user" ? "MANAGER" : "HR"}: ${h.text}`).join("\n") || "(none yet: ask your first question)"}`;
+};
+function claudeOnce(prompt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const p = spawn("claude", ["-p", "--output-format", "json", "--tools", "", "--model", "claude-sonnet-5-5"], { cwd: mkdtempSync(`${tmpdir()}/orcie-hr-`), env: { ...process.env, ANTHROPIC_API_KEY: "" } });
+    let out = "", err = ""; p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+    p.on("error", reject); p.on("close", (code) => { try { resolve(JSON.parse(out).result ?? ""); } catch { reject(new Error(`claude exited ${code}: ${err || out}`.slice(0, 500))); } });
+    p.stdin.end(prompt);
+  });
+}
+async function onboardingTurn(name: string, model: string, history: { role: string; text: string }[]) {
+  const text = (await claudeOnce(hrPrompt(name, model, history))).trim();
+  const j = text.match(/```json\s*([\s\S]*?)```/)?.[1] ?? (text.startsWith("{") ? text : null);
+  if (j) { try { return { done: true, profile: clean(JSON.parse(j)) }; } catch { /* fall through: treat as a question */ } }
+  return { done: false, question: text };
+}
+
 // ---- HTTP ----
 const view = (c: Conv) => ({ id: c.id, kind: c.kind, title: c.title, members: c.members, last: c.messages.at(-1) ?? null, count: c.messages.length, mode: c.mode ?? "parallel",
   inbound: c.messages.filter((m) => m.from !== "user" && m.from !== "system").map((m) => m.seq) }); // seqs of messages the user hasn't authored (for unread counts)
@@ -151,6 +194,10 @@ createServer(async (req, res) => {
       if (c.kind === "dm" && !c.members.includes("user") && c.id.includes("+")) return json(400, { error: "agent-to-agent DMs are read-only" });
       const msg = post(c, "user", String(b.text ?? ""), undefined, 0); route(c, msg); return json(202, msg);
     }
+    if (req.method === "POST" && url === "/api/onboarding") {
+      if (!/^[a-z][a-z0-9-]{0,30}$/.test(b.name ?? "")) return json(400, { error: "invalid name" });
+      return json(200, await onboardingTurn(b.name, b.model ?? "claude-sonnet-5-5", Array.isArray(b.history) ? b.history : []));
+    }
     if (req.method === "POST" && url === "/api/rooms") {
       const members: string[] = (b.members ?? []).filter((n: string) => agents[n]);
       const title = String(b.title ?? "").trim(); if (!title) return json(400, { error: "title required" });
@@ -170,7 +217,7 @@ createServer(async (req, res) => {
 
     // CLI + in-container tools (orcie-dm)
     if (req.method === "GET" && url === "/agents") return json(200, Object.values(agents));
-    if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5"));
+    if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5", b.profile ? clean(b.profile) : undefined));
     if (req.method === "POST" && url === "/dm") { // sync agent->agent (or user->agent) DM; returns the reply
       if (!agents[b.to]) return json(404, { error: `no agent ${b.to}` });
       const from = b.from ?? "user";

@@ -130,6 +130,20 @@ dialog form{padding:22px 26px}
 dialog h3{margin:0 0 4px;font-size:22px;font-weight:900}dialog p.sub{margin:0 0 14px;color:var(--mute);font-size:14px}
 dialog label.l{display:block;margin:12px 0 4px;font-weight:700;font-size:14px}
 dialog input[type=text],dialog select{width:100%;font:inherit;padding:9px 10px;border:1px solid #868686;border-radius:6px;background:var(--bg);color:var(--fg)}
+dialog.wide{width:min(720px,94vw)}dialog.wide #wiz{padding:0 26px 22px;max-height:88vh;overflow:auto}
+.steps{display:flex;gap:6px;padding:16px 0 0;font-size:12px;font-weight:700;color:var(--faint)}
+.steps span{padding:3px 10px;border-radius:12px;border:1px solid var(--line)}.steps span.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.pane{display:none}.pane.on{display:block}dialog.wide form{padding:0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+dialog textarea{width:100%;font:inherit;padding:9px 10px;border:1px solid #868686;border-radius:6px;background:var(--bg);color:var(--fg);resize:vertical}
+#hrchat{border:1px solid var(--line);border-radius:8px;height:300px;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:8px;margin-bottom:10px;background:var(--card)}
+.bub{max-width:82%;padding:8px 12px;border-radius:12px;white-space:pre-wrap}
+.bub.hr{background:var(--bg);border:1px solid var(--line);align-self:flex-start}.bub.me{background:var(--accent);color:#fff;align-self:flex-end}
+.bub.wait{color:var(--mute);font-style:italic}
+#hrform{display:flex;gap:8px}#hrform input{flex:1;font:inherit;padding:9px 10px;border:1px solid #868686;border-radius:6px;background:var(--bg);color:var(--fg)}
+.skill{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0}
+.skill .top{display:flex;gap:8px;align-items:center}.skill .top b{flex:1}.skill .d{color:var(--mute);font-size:13px;margin:2px 0 0 26px}
+.skill details{margin:4px 0 0 26px}.skill summary{cursor:pointer;color:var(--link);font-size:13px}
 dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
 dialog .btn{border:1px solid var(--line);background:none;border-radius:6px;padding:7px 16px;font-weight:700}
 dialog .btn.p{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -176,12 +190,38 @@ dialog .btn:disabled{opacity:.6}
   </div>
 </main>
 
-<dialog id="agentDlg"><form id="agentForm" method="dialog">
-  <h3>Hire an agent</h3><p class="sub">Starts a dedicated Docker container running the Claude CLI.</p>
-  <label class="l">Name</label><input type="text" id="aName" placeholder="e.g. alice" pattern="[a-z][a-z0-9\-]{0,30}" title="lowercase letters, digits, dashes" required>
-  <label class="l">Model</label><select id="aModel"><option value="claude-sonnet-5-5">Sonnet 5.5</option><option value="claude-opus-5-5">Opus 5.5</option><option value="claude-haiku-5-5">Haiku 5.5</option></select>
-  <div class="acts"><button type="button" class="btn" onclick="agentDlg.close()">Cancel</button><button class="btn p" id="aGo">Create agent</button></div>
-</form></dialog>
+<dialog id="agentDlg" class="wide"><div id="wiz">
+  <div class="steps"><span data-s="1">1 · Basics</span><span data-s="2">2 · Interview</span><span data-s="3">3 · Review</span></div>
+
+  <form id="w1" class="pane">
+    <h3>Hire an agent</h3><p class="sub">Each agent gets its own Docker container, memory and workspace.</p>
+    <label class="l">Name</label><input type="text" id="aName" placeholder="e.g. carol" pattern="[a-z][a-z0-9\-]{0,30}" title="lowercase letters, digits, dashes" required>
+    <label class="l">Model</label><select id="aModel"><option value="claude-sonnet-5-5">Sonnet 5.5</option><option value="claude-opus-5-5">Opus 5.5</option><option value="claude-haiku-5-5">Haiku 5.5</option></select>
+    <div class="acts"><button type="button" class="btn" id="w1skip" title="Create with default settings, no tailored role">Skip onboarding</button><button type="button" class="btn" onclick="agentDlg.close()">Cancel</button><button class="btn p">Start onboarding →</button></div>
+  </form>
+
+  <div id="w2" class="pane">
+    <h3>Onboarding interview</h3><p class="sub">Tell HR what <b id="w2name"></b> is for. It will design the role, tools and skills from your answers.</p>
+    <div id="hrchat"></div>
+    <form id="hrform"><input type="text" id="hrin" placeholder="Your answer…" autocomplete="off"><button class="btn p" id="hrsend">Send</button></form>
+    <div class="acts"><button type="button" class="btn" id="w2back">← Back</button><button type="button" class="btn" id="w2gen">Skip questions, generate now</button></div>
+  </div>
+
+  <form id="w3" class="pane">
+    <h3>Review the plan for <span id="w3name"></span></h3><p class="sub">This is what HR designed. Edit anything before creating the agent.</p>
+    <div class="grid2"><div><label class="l">Role</label><input type="text" id="pRole"></div>
+      <div><label class="l">Resources</label><select id="pRes"><option value="small">Small · 1 CPU, 2 GB</option><option value="standard">Standard · 2 CPUs, 4 GB</option><option value="large">Large · 4 CPUs, 8 GB</option></select></div></div>
+    <label class="l">Summary</label><input type="text" id="pSum">
+    <label class="l">Instructions (becomes the agent's CLAUDE.md)</label><textarea id="pPrompt" rows="7"></textarea>
+    <label class="l">Tools</label>
+    <div class="chk"><input type="checkbox" id="pBrowser"><span><b>Headless browser</b> (Playwright) — browse and interact with websites</span></div>
+    <div class="chk"><input type="checkbox" checked disabled><span><b>Shell, files, persistent memory</b> — always on</span></div>
+    <label class="l">Skills</label><div id="pSkills"></div>
+    <label class="l">Starting memory</label><textarea id="pMem" rows="3"></textarea>
+    <div class="acts"><button type="button" class="btn" id="w3back">← Back to interview</button><button class="btn p" id="aGo">Create agent</button></div>
+  </form>
+</div></dialog>
+
 <dialog id="roomDlg"><form id="roomForm" method="dialog">
   <h3>Create a room</h3><p class="sub">Every agent you add sees everything said here.</p>
   <label class="l">Name</label><input type="text" id="rTitle" placeholder="e.g. design" required>
@@ -257,7 +297,7 @@ function drawNav() {
   nav.append(
     section("rooms", "Rooms", "Create a room", openRoomDlg, convs.filter((c) => c.kind === "room").map((c) => ({
       id: c.id, text: c.title, icon: '<span class="hash">#</span>', badge: unread(c), soft: true, busy: c.members.some((m) => typing[c.id]?.[m]) }))),
-    section("agents", "Agents", "Hire an agent", () => { $("aName").value = ""; agentDlg.showModal(); }, state.agents.map((a) => {
+    section("agents", "Agents", "Hire an agent", openWizard, state.agents.map((a) => {
       const c = convs.find((x) => x.id === "dm:" + a.name) || { id: "dm:" + a.name };
       return { id: c.id, text: a.name, badge: unread(c), busy: busy.has(a.name),
         icon: `<span class="av sm" style="background:${color(a.name)}">${a.name[0].toUpperCase()}<span class="pres ${busy.has(a.name) ? "busy" : ""}"></span></span>` }; })),
@@ -279,7 +319,7 @@ function drawHeader() {
   const working = members.filter(isBusy);
   const agent = state.agents.find((a) => a.name === members[0]);
   h.innerHTML = `<div class="title">${conv.kind === "room" ? "#" : av(members[0], "sm")}<span>${esc(conv.kind === "room" ? conv.title : conv.title)}</span></div>
-    <div class="status ${working.length ? "busy" : ""}" ${conv.kind === "room" && !working.length ? 'hidden' : ""}><span class="sd"></span>${working.length ? esc(working.join(", ")) + " working…" : conv.kind === "room" ? "" : ro ? "read-only" : "Active" + (agent ? " · " + agent.model.replace("claude-", "") : "")}</div><div class="sp"></div>`;
+    <div class="status ${working.length ? "busy" : ""}" ${conv.kind === "room" && !working.length ? 'hidden' : ""}><span class="sd"></span>${working.length ? esc(working.join(", ")) + " working…" : conv.kind === "room" ? "" : ro ? "read-only" : "Active" + (agent ? " · " + (agent.profile?.role ? agent.profile.role + " · " : "") + agent.model.replace("claude-", "") : "")}</div><div class="sp"></div>`;
   if (conv.kind === "room") {
     const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
     st.innerHTML = conv.members.slice(0, 4).map((m) => av(m, "xs")).join("") + `<span>${conv.members.length}</span>`; h.append(st);
@@ -396,12 +436,45 @@ function openRoomDlg() {
   roomDlg.showModal();
 }
 $("compose").onclick = openRoomDlg;
-$("agentForm").onsubmit = async (e) => {
-  e.preventDefault(); const go = $("aGo"), name = $("aName").value.trim(); go.disabled = true; go.textContent = "Starting container…";
-  try { const r = await fetch("/agents", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, model: $("aModel").value }) });
-    if (!r.ok) throw new Error((await r.json()).error); agentDlg.close(); await refresh(); open("dm:" + name); } catch (err) { toast(err.message); }
-  go.disabled = false; go.textContent = "Create agent";
-};
+// ---- onboarding wizard (Agent HR) ----
+let wiz = { name: "", model: "", history: [], profile: null };
+const step = (n) => { document.querySelectorAll("#wiz .pane").forEach((p, i) => p.classList.toggle("on", i + 1 === n));
+  document.querySelectorAll(".steps span").forEach((x) => x.classList.toggle("on", +x.dataset.s === n)); };
+function openWizard() { wiz = { name: "", model: "", history: [], profile: null }; $("aName").value = ""; $("hrchat").innerHTML = ""; step(1); agentDlg.showModal(); $("aName").focus(); }
+const bub = (cls, t) => { const d = document.createElement("div"); d.className = "bub " + cls; d.textContent = t; $("hrchat").append(d); $("hrchat").scrollTop = 1e9; return d; };
+async function hrTurn() {
+  const w = bub("hr wait", "HR is thinking…"); $("hrsend").disabled = $("w2gen").disabled = true;
+  try {
+    const r = await api("/onboarding", "POST", { name: wiz.name, model: wiz.model, history: wiz.history }); w.remove();
+    if (r.done) { wiz.profile = r.profile; return showReview(); }
+    wiz.history.push({ role: "hr", text: r.question }); bub("hr", r.question);
+  } catch (e) { w.remove(); toast(e.message); }
+  $("hrsend").disabled = $("w2gen").disabled = false; $("hrin").focus();
+}
+$("w1").onsubmit = (e) => { e.preventDefault(); wiz.name = $("aName").value.trim(); wiz.model = $("aModel").value; $("w2name").textContent = wiz.name; step(2); if (!wiz.history.length) hrTurn(); };
+$("w1skip").onclick = async () => { if (!$("aName").reportValidity()) return; wiz.name = $("aName").value.trim(); wiz.model = $("aModel").value; await createAgent(null); };
+$("hrform").onsubmit = (e) => { e.preventDefault(); const t = $("hrin").value.trim(); if (!t) return; $("hrin").value = ""; wiz.history.push({ role: "user", text: t }); bub("me", t); hrTurn(); };
+$("w2gen").onclick = () => { wiz.history.push({ role: "user", text: "That's enough, please generate the profile now." }); hrTurn(); };
+$("w2back").onclick = () => step(1);
+$("w3back").onclick = () => step(2);
+function showReview() {
+  const p = wiz.profile; $("w3name").textContent = wiz.name;
+  $("pRole").value = p.role; $("pSum").value = p.summary; $("pPrompt").value = p.systemPrompt; $("pRes").value = p.resources; $("pBrowser").checked = p.tools.browser; $("pMem").value = p.memorySeed;
+  const box = $("pSkills"); box.innerHTML = "";
+  p.skills.forEach((k, i) => { const d = document.createElement("div"); d.className = "skill";
+    d.innerHTML = `<div class="top"><input type="checkbox" checked data-i="${i}"><b>${esc(k.name)}</b></div><div class="d">${esc(k.description)}</div><details><summary>Edit instructions</summary><textarea rows="5" data-t="${i}">${esc(k.instructions)}</textarea></details>`; box.append(d); });
+  if (!p.skills.length) box.innerHTML = "<i>No skills proposed.</i>";
+  step(3);
+}
+async function createAgent(profile) {
+  const go = $("aGo"); go.disabled = $("w1skip").disabled = true; go.textContent = "Starting container…";
+  try { const r = await fetch("/agents", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: wiz.name, model: wiz.model, profile }) });
+    if (!r.ok) throw new Error((await r.json()).error); agentDlg.close(); await refresh(); open("dm:" + wiz.name); } catch (err) { toast(err.message); }
+  go.disabled = $("w1skip").disabled = false; go.textContent = "Create agent";
+}
+$("w3").onsubmit = (e) => { e.preventDefault(); const p = wiz.profile;
+  const skills = [...document.querySelectorAll("#pSkills input[type=checkbox]:checked")].map((c) => ({ ...p.skills[+c.dataset.i], instructions: document.querySelector(`#pSkills textarea[data-t="${c.dataset.i}"]`).value }));
+  createAgent({ ...p, role: $("pRole").value, summary: $("pSum").value, systemPrompt: $("pPrompt").value, resources: $("pRes").value, tools: { browser: $("pBrowser").checked }, skills, memorySeed: $("pMem").value }); };
 $("roomForm").onsubmit = async (e) => {
   e.preventDefault();
   try { const r = await api("/rooms", "POST", { title: $("rTitle").value.trim(), members: [...document.querySelectorAll("#rMembers input:checked")].map((i) => i.value), mode: $("rMode").value });
