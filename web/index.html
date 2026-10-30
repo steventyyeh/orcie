@@ -26,6 +26,11 @@ aside{width:268px;background:var(--side);color:var(--side-fg);display:flex;flex-
 .ws{display:flex;align-items:center;gap:8px;padding:0 14px;height:49px;border-bottom:1px solid var(--side-line);color:#fff;font-weight:900;font-size:18px;flex-shrink:0}
 .ws .sp{flex:1}.ws button{background:#fff;color:#3f0e40;border:0;width:32px;height:32px;border-radius:50%;display:grid;place-items:center}
 .nav{flex:1;overflow:auto;padding:8px 0}
+.sbox{padding:10px 12px 0}.sbox input{width:100%;font:inherit;font-size:14px;padding:6px 10px;border-radius:6px;border:1px solid var(--side-line);background:rgba(255,255,255,.1);color:#fff;outline:0}
+.sbox input::placeholder{color:var(--side-fg)}.sbox input:focus{background:#fff;color:#1d1c1d}.sbox input:focus::placeholder{color:#777}
+.hit{margin:2px 8px;padding:7px 10px;border-radius:6px;cursor:pointer;color:var(--side-fg);font-size:13px}.hit:hover{background:var(--side-hi)}
+.hit .t{color:#fff;font-weight:700}.hit .s{margin-top:2px;overflow-wrap:anywhere}.hit mark{background:#ecb22e;color:#1d1c1d;border-radius:2px;padding:0 1px}
+.flash{animation:flash 2.2s ease-out}@keyframes flash{0%,40%{background:rgba(236,178,46,.35)}100%{background:transparent}}
 .sec{margin:6px 0 10px}
 .sec>.hd{display:flex;align-items:center;gap:2px;padding:2px 10px 2px 8px;margin:0 8px;border-radius:6px}
 .sec>.hd .t{flex:1;background:none;border:0;display:flex;gap:6px;align-items:center;padding:4px 6px;border-radius:6px;color:var(--side-fg);font-size:15px;text-align:left}
@@ -175,6 +180,7 @@ dialog .btn:disabled{opacity:.6}
 
 <aside>
   <div class="ws"><span>🐳 Orcie</span><div class="sp"></div><button title="New room" id="compose"><svg class="ic"><use href="#i-edit"/></svg></button></div>
+  <div class="sbox"><input id="q" type="search" placeholder="Search all conversations" autocomplete="off"></div>
   <div class="nav" id="nav"></div>
   <div class="foot" id="foot"></div>
 </aside>
@@ -299,6 +305,7 @@ function section(id, title, addTitle, onAdd, items) {
   return el;
 }
 function drawNav() {
+  if ($("q").value.trim().length >= 2 && document.activeElement === $("q")) return; // search results are showing
   const busy = busyAgents(), convs = state.conversations, nav = $("nav"), scroll = nav.scrollTop;
   nav.innerHTML = "";
   nav.append(
@@ -354,9 +361,9 @@ function msgNode(m, prev, newFrom) {
   const f = document.createDocumentFragment(), d = new Date(m.at);
   if (!prev || new Date(prev.at).toDateString() !== d.toDateString()) { const x = document.createElement("div"); x.className = "day"; x.innerHTML = `<span>${dayLabel(d)}</span>`; f.append(x); }
   if (newFrom === m.seq) { const x = document.createElement("div"); x.className = "newdiv"; x.innerHTML = "<span>New</span>"; f.append(x); }
-  if (m.from === "system") { const x = document.createElement("div"); x.className = "sys"; x.textContent = m.text; f.append(x); return f; }
+  if (m.from === "system") { const x = document.createElement("div"); x.className = "sys"; x.dataset.seq = m.seq; x.textContent = m.text; f.append(x); return f; }
   const grouped = prev && prev.from === m.from && new Date(prev.at).toDateString() === d.toDateString() && d - new Date(prev.at) < 5 * 60e3 && newFrom !== m.seq;
-  const x = document.createElement("div"); x.className = "m" + (grouped ? "" : " first") + (m.text.startsWith("failed") ? " err" : "");
+  const x = document.createElement("div"); x.dataset.seq = m.seq; x.className = "m" + (grouped ? "" : " first") + (m.text.startsWith("failed") ? " err" : "");
   x.innerHTML = (grouped ? `<div class="gut">${hm(d)}</div>` : av(m.from, "md")) + `<div class="main">${grouped ? "" : `<div><span class="who">${esc(label(m.from))}</span><span class="when">${hm(d)}</span></div>`}<div class="body">${md(m.text)}</div></div>`;
   if (m.activity?.length) x.querySelector(".main").append(actEl(m.activity, `${ic("wrench")} Used ${m.activity.length} tool${m.activity.length > 1 ? "s" : ""}`, false));
   f.append(x); return f;
@@ -380,7 +387,7 @@ function renderAll(newFrom) {
   const nd = sc.querySelector(".newdiv"); nd ? nd.scrollIntoView({ block: "center" }) : (sc.scrollTop = sc.scrollHeight);
 }
 
-async function open(id) {
+async function open(id, focusSeq) {
   if (cur && id !== cur) { saveDraft(); drawNav(); }
   cur = id; conv = await api("/conversations/" + encodeURIComponent(id));
   const newFrom = conv.messages.find((m) => m.seq > (readAt[id] ?? 0) && m.from !== "user" && m.from !== "system")?.seq ?? null;
@@ -388,6 +395,7 @@ async function open(id) {
   $("txt").placeholder = ro ? "Agent-to-agent conversations are read-only" : conv.kind === "room" ? `Message #${conv.title} — use @name to address one agent` : `Message ${conv.title}`;
   txt.value = drafts[id] ?? ""; renderAll(newFrom); drawLive(); drawHeader(); markRead(); updSend(); if (!ro) txt.focus();
   $("jump").style.display = "none";
+  if (focusSeq) { const el = sc.querySelector(`[data-seq="${focusSeq}"]`); if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); } }
 }
 
 // ---- live "working" panel ----
@@ -494,6 +502,21 @@ $("roomForm").onsubmit = async (e) => {
   try { const r = await api("/rooms", "POST", { title: $("rTitle").value.trim(), members: [...document.querySelectorAll("#rMembers input:checked")].map((i) => i.value), mode: $("rMode").value });
     roomDlg.close(); await refresh(); open(r.id); } catch (err) { toast(err.message); }
 };
+
+// ---- search (server-side full-text over all conversations) ----
+let sTimer = 0;
+function hl(snip) { return esc(snip).replace(/\[\[/g, "<mark>").replace(/\]\]/g, "</mark>"); }
+async function runSearch() {
+  const q = $("q").value.trim(); if (q.length < 2) return drawNav();
+  const { results } = await api("/search?q=" + encodeURIComponent(q)); if ($("q").value.trim() !== q) return;
+  const nav = $("nav"); nav.innerHTML = results.length ? "" : '<div class="hit">No messages match.</div>';
+  results.forEach((r) => { const d = document.createElement("div"); d.className = "hit";
+    d.innerHTML = `<div class="t">${r.kind === "room" ? "#" : ""}${esc(r.title)} <span style="font-weight:400;opacity:.7">· ${esc(r.from)} · ${new Date(r.at).toLocaleDateString([], { month: "short", day: "numeric" })} ${hm(new Date(r.at))}</span></div><div class="s">${hl(r.snippet)}</div>`;
+    d.onclick = () => open(r.conv, r.seq); nav.append(d); });
+}
+$("q").oninput = () => { clearTimeout(sTimer); sTimer = setTimeout(runSearch, 250); };
+$("q").onkeydown = (e) => { if (e.key === "Escape") { $("q").value = ""; drawNav(); $("q").blur(); } };
+document.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("q").focus(); $("q").select(); } });
 
 // ---- jump / visibility ----
 sc.onscroll = () => { if (nearBottom()) $("jump").style.display = "none"; };

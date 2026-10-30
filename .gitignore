@@ -8,3 +8,6 @@ agents.json
 .env
 state.json
 .shots/
+orcie.db
+orcie.db-*
+*.migrated

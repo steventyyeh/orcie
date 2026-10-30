@@ -24,3 +24,6 @@ Rooms: every member agent has its own session for the room and sees every messag
 
 ## Agent HR onboarding
 "+" next to Agents opens a 3-step wizard: (1) name and model, (2) an HR interviewer (a tool-less Claude call on the host) asks about the agent's purpose, (3) you review and edit the generated profile: role, instructions (written to the agent's CLAUDE.md), tools (headless browser on/off), skills (written as Claude Code `SKILL.md` files), starting memory, and a resource preset (small/standard/large). The profile is passed to the container as `ORCIE_PROFILE` and applied on first start by `harness/src/apply-profile.ts`. "Skip onboarding" creates a default agent.
+
+## Storage (on-prem)
+Conversations live in a local SQLite file, `orcie.db` (override with `ORCIE_DB`): agents, conversations, members, messages (with tool activity), per-agent delivery cursors, and an FTS5 full-text index. Nothing leaves the machine. Search from the UI (sidebar box or Cmd/Ctrl+K), the API (`GET /api/search?q=`), or `cli/orcie search <text>`. Earlier `state.json`/`agents.json` files are imported once on first start and renamed `*.migrated`. Each agent's private state (Claude sessions, memory notes, turn log) stays in its own container volume.

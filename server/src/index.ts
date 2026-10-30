@@ -1,6 +1,7 @@
 import { createServer, type ServerResponse } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, renameSync } from "node:fs";
+import { openDb } from "./db.ts";
 import { tmpdir } from "node:os";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
@@ -20,10 +21,17 @@ const IMAGE = "orcie-agent:dev";
 const PRESETS = { small: { cpus: "1", memory: "2g" }, standard: { cpus: "2", memory: "4g" }, large: { cpus: "4", memory: "8g" } } as const;
 const WEB = new URL("../../web/index.html", import.meta.url);
 
-const agents: Record<string, Agent> = existsSync(STORE) ? JSON.parse(readFileSync(STORE, "utf8")) : {};
-const convs: Record<string, Conv> = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-const saveAgents = () => writeFileSync(STORE, JSON.stringify(agents, null, 2));
-const saveConvs = () => writeFileSync(STATE, JSON.stringify(convs, null, 2));
+// Persistence: local SQLite (see db.ts). Memory holds a working copy; every change is written through.
+const db = openDb(process.env.ORCIE_DB ?? "orcie.db");
+if (!db.count() && (existsSync(STATE) || existsSync(STORE))) { // one-time import of the earlier JSON files
+  const oldAgents: Record<string, Agent> = existsSync(STORE) ? JSON.parse(readFileSync(STORE, "utf8")) : {};
+  const oldConvs: Record<string, Conv> = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
+  Object.values(oldAgents).forEach((a) => db.putAgent(a));
+  for (const c of Object.values(oldConvs)) { db.putConv(c); c.messages.forEach((m) => db.addMsg(c.id, m)); Object.entries(c.cursor).forEach(([a, n]) => db.setCursor(c.id, a, n)); }
+  for (const f of [STORE, STATE]) if (existsSync(f)) renameSync(f, `${f}.migrated`);
+  console.log(`imported ${Object.keys(oldConvs).length} conversations from JSON into SQLite`);
+}
+const { agents, convs } = db.loadAll() as { agents: Record<string, Agent>; convs: Record<string, Conv> };
 
 const docker = (...a: string[]) => execFileSync("docker", a, { encoding: "utf8", env: process.env }).trim();
 const hostPort = (c: string) => Number(docker("port", c, "9090/tcp").split("\n")[0].split(":").pop()); // port changes on restart
@@ -59,7 +67,7 @@ function createAgent(name: string, model: string, profile?: Profile) {
     "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_MODEL=${model}`,
     ...(profile ? ["-e", `ORCIE_PROFILE=${Buffer.from(JSON.stringify(profile)).toString("base64")}`] : []), IMAGE);
   agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(profile ? { profile } : {}) };
-  saveAgents();
+  db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
   if (profile) post(dm, "system", `${name} was onboarded as ${profile.role}: ${profile.skills.length} skill${profile.skills.length === 1 ? "" : "s"}, ${profile.tools.browser ? "browser enabled" : "no browser"}, ${profile.resources} resources.`);
   emit({ type: "state" });
@@ -68,11 +76,12 @@ function createAgent(name: string, model: string, profile?: Profile) {
 
 // ---- conversations ----
 function ensureConv(id: string, kind: Conv["kind"], title: string, members: string[]) {
-  return (convs[id] ??= { id, kind, title, members, messages: [], cursor: {} });
+  if (!convs[id]) { convs[id] = { id, kind, title, members, messages: [], cursor: {} }; db.putConv(convs[id]); }
+  return convs[id];
 }
 function post(c: Conv, from: string, text: string, activity?: Item[], hop?: number) {
   const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}), ...(hop !== undefined ? { hop } : {}) };
-  c.messages.push(m); saveConvs(); emit({ type: "message", conv: c.id, msg: m });
+  c.messages.push(m); db.addMsg(c.id, m); emit({ type: "message", conv: c.id, msg: m });
   return m;
 }
 
@@ -103,7 +112,7 @@ async function deliver(c: Conv, agent: string): Promise<string | null> {
           : `While you were drafting, new messages arrived:\n${text}\n\nYour unposted draft was:\n${draft}\n\nTaking everything now said into account, reply with your final message (revise your draft, or drop whatever has already been covered), or reply exactly NO_REPLY if it is now redundant.`;
       }
       reply = (await turn(agents[agent], { from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conversation: c.id }, onEvent)).trim();
-      c.cursor[agent] = upto;
+      c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
       const arrived = c.messages.some((m) => m.seq > upto && m.from !== agent && m.from !== "system");
       if (c.kind === "room" && pass === 0 && reply && reply !== "NO_REPLY" && arrived) { draft = reply; continue; } // hold and reconsider
       if (reply && reply !== "NO_REPLY") route(c, post(c, agent, reply, items, hop));
@@ -213,6 +222,9 @@ createServer(async (req, res) => {
       if (c.kind === "dm" && !c.members.includes("user") && c.id.includes("+")) return json(400, { error: "agent-to-agent DMs are read-only" });
       const msg = post(c, "user", String(b.text ?? ""), undefined, 0); route(c, msg); return json(202, msg);
     }
+    if (req.method === "GET" && url === "/api/search") {
+      const q = new URL(req.url!, "http://x").searchParams.get("q") ?? ""; return json(200, { results: db.search(q) });
+    }
     if (req.method === "POST" && url === "/api/onboarding") {
       if (!/^[a-z][a-z0-9-]{0,30}$/.test(b.name ?? "")) return json(400, { error: "invalid name" });
       return json(200, await onboardingTurn(b.name, b.model ?? "claude-sonnet-5-5", Array.isArray(b.history) ? b.history : []));
@@ -222,15 +234,15 @@ createServer(async (req, res) => {
       const title = String(b.title ?? "").trim(); if (!title) return json(400, { error: "title required" });
       const id = `room:${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
       if (convs[id]) return json(409, { error: "room exists" });
-      const c = ensureConv(id, "room", title, members); c.mode = b.mode === "sequential" ? "sequential" : "parallel"; saveConvs(); emit({ type: "state" }); return json(201, view(c));
+      const c = ensureConv(id, "room", title, members); c.mode = b.mode === "sequential" ? "sequential" : "parallel"; db.putConv(c); emit({ type: "state" }); return json(201, view(c));
     }
     if ((m = url.match(/^\/api\/rooms\/([^/]+)\/mode$/)) && req.method === "POST") {
       const c = convs[decodeURIComponent(m[1])]; if (!c || c.kind !== "room") return json(404, { error: "not found" });
-      c.mode = b.mode === "sequential" ? "sequential" : "parallel"; saveConvs(); emit({ type: "state" }); return json(200, view(c));
+      c.mode = b.mode === "sequential" ? "sequential" : "parallel"; db.putConv(c); emit({ type: "state" }); return json(200, view(c));
     }
     if ((m = url.match(/^\/api\/rooms\/([^/]+)\/members$/)) && req.method === "POST") {
       const c = convs[decodeURIComponent(m[1])]; if (!c || c.kind !== "room" || !agents[b.name]) return json(404, { error: "not found" });
-      if (!c.members.includes(b.name)) c.members.push(b.name);
+      if (!c.members.includes(b.name)) { c.members.push(b.name); db.putConv(c); }
       post(c, "system", `${b.name} joined the room`); emit({ type: "state" }); return json(200, view(c));
     }
 
@@ -250,7 +262,7 @@ createServer(async (req, res) => {
     if ((m = url.match(/^\/agents\/([^/]+)\/log$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/log"));
     if ((m = url.match(/^\/agents\/([^/]+)\/health$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/healthz"));
     if (req.method === "DELETE" && (m = url.match(/^\/agents\/([^/]+)$/)) && agents[m[1]]) {
-      docker("rm", "-f", agents[m[1]].container); delete agents[m[1]]; saveAgents(); emit({ type: "state" }); return json(200, { deleted: m[1] });
+      docker("rm", "-f", agents[m[1]].container); db.delAgent(m[1]); delete agents[m[1]]; emit({ type: "state" }); return json(200, { deleted: m[1] });
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e instanceof Error ? e.message : e) }); }
