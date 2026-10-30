@@ -7,7 +7,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 type Agent = { name: string; model: string; container: string; port: number; created: string };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
 type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[] };
-type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number> };
+type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential" };
 
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
@@ -93,17 +93,21 @@ async function deliver(c: Conv, agent: string): Promise<string | null> {
   } finally { emit({ type: "typing", conv: c.id, agent, on: false }); }
 }
 
-// Room fan-out is sequential (each agent sees earlier replies) and serialized per conversation.
+// Room fan-out: "parallel" (default) runs all addressed agents at once; "sequential" runs them in turn so each sees
+// earlier replies. Rounds are serialized per conversation either way.
 const chains = new Map<string, Promise<unknown>>();
 function trigger(c: Conv, text: string) {
   const mentioned = c.members.filter((n) => new RegExp(`@${n}\\b`).test(text));
   const targets = c.kind === "dm" ? c.members : mentioned.length ? mentioned : c.members;
-  const run = async () => { for (const a of targets) await deliver(c, a); };
+  const run = async () => {
+    if (c.mode === "sequential") for (const a of targets) await deliver(c, a);
+    else await Promise.all(targets.map((a) => deliver(c, a)));
+  };
   chains.set(c.id, (chains.get(c.id) ?? Promise.resolve()).then(run, run));
 }
 
 // ---- HTTP ----
-const view = (c: Conv) => ({ id: c.id, kind: c.kind, title: c.title, members: c.members, last: c.messages.at(-1) ?? null, count: c.messages.length,
+const view = (c: Conv) => ({ id: c.id, kind: c.kind, title: c.title, members: c.members, last: c.messages.at(-1) ?? null, count: c.messages.length, mode: c.mode ?? "parallel",
   inbound: c.messages.filter((m) => m.from !== "user" && m.from !== "system").map((m) => m.seq) }); // seqs of messages the user hasn't authored (for unread counts)
 
 createServer(async (req, res) => {
@@ -136,7 +140,11 @@ createServer(async (req, res) => {
       const title = String(b.title ?? "").trim(); if (!title) return json(400, { error: "title required" });
       const id = `room:${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
       if (convs[id]) return json(409, { error: "room exists" });
-      const c = ensureConv(id, "room", title, members); saveConvs(); emit({ type: "state" }); return json(201, view(c));
+      const c = ensureConv(id, "room", title, members); c.mode = b.mode === "sequential" ? "sequential" : "parallel"; saveConvs(); emit({ type: "state" }); return json(201, view(c));
+    }
+    if ((m = url.match(/^\/api\/rooms\/([^/]+)\/mode$/)) && req.method === "POST") {
+      const c = convs[decodeURIComponent(m[1])]; if (!c || c.kind !== "room") return json(404, { error: "not found" });
+      c.mode = b.mode === "sequential" ? "sequential" : "parallel"; saveConvs(); emit({ type: "state" }); return json(200, view(c));
     }
     if ((m = url.match(/^\/api\/rooms\/([^/]+)\/members$/)) && req.method === "POST") {
       const c = convs[decodeURIComponent(m[1])]; if (!c || c.kind !== "room" || !agents[b.name]) return json(404, { error: "not found" });

@@ -186,6 +186,7 @@ dialog .btn:disabled{opacity:.6}
   <h3>Create a room</h3><p class="sub">Every agent you add sees everything said here.</p>
   <label class="l">Name</label><input type="text" id="rTitle" placeholder="e.g. design" required>
   <label class="l">Members</label><div id="rMembers"></div>
+  <label class="l">Replies</label><select id="rMode"><option value="parallel">All agents reply at once (faster)</option><option value="sequential">One at a time, each sees earlier replies</option></select>
   <div class="acts"><button type="button" class="btn" onclick="roomDlg.close()">Cancel</button><button class="btn p">Create room</button></div>
 </form></dialog>
 
@@ -282,6 +283,10 @@ function drawHeader() {
   if (conv.kind === "room") {
     const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
     st.innerHTML = conv.members.slice(0, 4).map((m) => av(m, "xs")).join("") + `<span>${conv.members.length}</span>`; h.append(st);
+    const mb = document.createElement("button"), seq = c?.mode === "sequential"; mb.className = "addm";
+    mb.title = seq ? "Agents reply one at a time. Click for parallel." : "Agents reply at the same time. Click for one at a time.";
+    mb.textContent = seq ? "Replies: in turn" : "Replies: parallel";
+    mb.onclick = async (e) => { e.stopPropagation(); await api(`/rooms/${encodeURIComponent(cur)}/mode`, "POST", { mode: seq ? "parallel" : "sequential" }); refresh(); }; h.append(mb);
     const avail = state.agents.filter((a) => !conv.members.includes(a.name));
     if (avail.length) { const b = document.createElement("button"); b.className = "addm"; b.innerHTML = ic("plus") + "Add agent";
       b.onclick = (e) => { e.stopPropagation(); closePops(); const p = document.createElement("div"); p.className = "pop"; p.style.cssText = "top:36px;right:0"; p.dataset.pop = 1;
@@ -399,7 +404,7 @@ $("agentForm").onsubmit = async (e) => {
 };
 $("roomForm").onsubmit = async (e) => {
   e.preventDefault();
-  try { const r = await api("/rooms", "POST", { title: $("rTitle").value.trim(), members: [...document.querySelectorAll("#rMembers input:checked")].map((i) => i.value) });
+  try { const r = await api("/rooms", "POST", { title: $("rTitle").value.trim(), members: [...document.querySelectorAll("#rMembers input:checked")].map((i) => i.value), mode: $("rMode").value });
     roomDlg.close(); await refresh(); open(r.id); } catch (err) { toast(err.message); }
 };
 
