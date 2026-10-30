@@ -75,6 +75,10 @@ aside{width:264px;background:var(--side);color:var(--side-fg);display:flex;flex-
 .badge.soft{background:rgba(255,255,255,.22)}
 .av{border-radius:var(--r1);display:grid;place-items:center;color:#fff;font-weight:600;flex-shrink:0;position:relative}
 .av.sm{width:20px;height:20px;font-size:11px;border-radius:5px}.av.md{width:36px;height:36px;font-size:15px;border-radius:var(--r2)}.av.xs{width:24px;height:24px;font-size:11px;border-radius:50%;border:2px solid var(--bg)}
+.pair{display:inline-flex;align-items:center}.pair .av{border:1.5px solid var(--side)}
+.item .ico{width:24px}.pair .av.tiny{width:15px;height:15px;font-size:8px;border-radius:50%;border-width:1.5px}.pair .av+.av{margin-left:-5px}
+.item.on .pair .av{border-color:var(--side-on)}
+#hdr .pair .av{border-color:var(--bg);width:24px;height:24px;font-size:11px;border-radius:50%}#hdr .pair .av+.av{margin-left:-8px}
 .pres{position:absolute;right:-3px;bottom:-3px;width:9px;height:9px;border-radius:50%;background:var(--green);border:2px solid var(--side)}
 .item.on .pres{border-color:var(--side-on)}
 .foot{padding:var(--s3) var(--s4);border-top:1px solid var(--side-line);font-size:12px;opacity:.75}
@@ -295,6 +299,7 @@ const label = (n) => n === "user" ? "You" : n;
 const av = (n, sz) => `<div class="av ${sz}" style="background:${color(n)}">${n[0].toUpperCase()}</div>`;
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const names = () => state.agents.map((a) => a.name);
+const pairAv = (title) => `<span class="pair">${title.split(" \u2194 ").map((n) => `<span class="av tiny" style="background:${color(n)}">${esc(n[0].toUpperCase())}</span>`).join("")}</span>`;
 const pairTitle = (t) => t.replace(" \u2194 ", " & "); // agent-to-agent titles are stored as "a \u2194 b"
 
 // ---- tiny markdown: code blocks, inline code, bold, italic, links, lists, @mentions ----
@@ -352,7 +357,7 @@ function drawNav() {
       const c = convs.find((x) => x.id === "dm:" + a.name) || { id: "dm:" + a.name };
       return { id: c.id, text: a.name, badge: unread(c), busy: busy.has(a.name),
         icon: `<span class="ico"><span class="av sm" style="background:${color(a.name)}">${a.name[0].toUpperCase()}<span class="pres"></span></span></span>` }; })),
-    section("aadm", "Agent DMs", "", null, convs.filter((c) => c.id.includes("+")).map((c) => ({ id: c.id, text: pairTitle(c.title), icon: `<span class="ico">${ic("swap")}</span>`, badge: unread(c), soft: true }))),
+    section("aadm", "Agent DMs", "", null, convs.filter((c) => c.id.includes("+")).map((c) => ({ id: c.id, text: pairTitle(c.title), icon: `<span class="ico">${pairAv(c.title)}</span>`, badge: unread(c), soft: true }))),
   );
   nav.scrollTop = scroll;
   const n = convs.reduce((a, c) => a + unread(c), 0);
@@ -370,7 +375,7 @@ function drawHeader() {
   const agent = state.agents.find((a) => a.name === members[0]);
   const sub = working.length ? `${working.join(", ")} working`
     : room ? "" : ro ? "Read-only" : ["Active", agent?.profile?.role, agent?.model.replace("claude-", "")].filter(Boolean).join(", ");
-  h.innerHTML = `<div class="title">${room ? `<span class="ico">${ic("hash")}</span>` : ro ? `<span class="ico">${ic("swap")}</span>` : av(members[0], "sm")}<span>${esc(pairTitle(conv.title))}</span></div>
+  h.innerHTML = `<div class="title">${room ? `<span class="ico">${ic("hash")}</span>` : ro ? pairAv(conv.title) : av(members[0], "sm")}<span>${esc(pairTitle(conv.title))}</span></div>
     <div class="status ${working.length ? "busy" : ""}" ${sub ? "" : "hidden"}><span class="sd"></span>${esc(sub)}</div><div class="sp"></div>`;
   if (!room) return;
   const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
