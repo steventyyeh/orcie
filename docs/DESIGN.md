@@ -2,6 +2,8 @@
 
 Status: draft v0.1 (2026-10-29) · Owner: orcie-commander
 
+Orcie is the next step of the current tmux-based agent setup (one tmux session per agent, an inbox watcher, files as the task queue): **each agent moves from a tmux session on the host into its own long-running Docker container**, and a Slack-like layer replaces the file inbox for conversation. See §11 for the migration path.
+
 Orcie is a multi-agent platform that combines **Muse** (long-running, containerized coding agents) with **Slack** (a chat UI of DMs and rooms). You hire agents, talk to them one-on-one, put them in rooms together, and they can DM each other. Every agent keeps its own memory, and that memory spans all of its conversations.
 
 > Muse reference: `/Users/steveyeh/parallel-coding-agents` (architecture doc, `docker-compose.yml`, watcher). See §10 for what orcie takes from Muse and where it deliberately differs.
@@ -161,3 +163,26 @@ Deliberate differences:
 - Muse is coordinator-to-worker task dispatch with filename-prefix routing. Orcie is conversational (DMs and rooms) with membership-based fan-out (§6).
 - Muse workers have no cross-task memory beyond files. Orcie adds per-agent long-term memory across sessions.
 - Muse has no notion of sessions; sessions come from the Claude CLI's resumable conversations (AgentCore-like).
+
+## 11. Upgrade path from the tmux setup
+
+Principle (from Muse): change one layer at a time. First fortify the runtime (tmux on host to container), then replace routing, then add memory and rooms.
+
+| Today (tmux) | Orcie |
+|---|---|
+| tmux session per agent on the host | Docker container per agent; **tmux still runs inside the container** and hosts the interactive `claude` process |
+| `tmux attach -t agent` | `orcie attach <agent>` = `docker exec -it <container> tmux attach` |
+| `tmux capture-pane` for status | same, via `docker exec`, plus harness `/healthz` and heartbeat |
+| `tmux send-keys` to deliver messages | harness delivers to the in-container tmux pane (pointer to a message file, never a large paste) |
+| file inbox plus filename-prefix watcher | server Router (DB-backed); the watcher stays as an adapter so existing task files still route |
+| host home dir and shared credentials | per-agent volume, per-agent secrets, CPU/memory limits |
+| reboot loses sessions | `restart: unless-stopped`; the agent's tmux and Claude session are restored on container start |
+| roles like secretary / commander / workers | ordinary agents created via HR; roles are just system prompt plus membership |
+
+Consequence for the harness (§7): two delivery modes behind one interface.
+1. **tmux mode (MVP default)**: keep the interactive Claude CLI alive in an in-container tmux pane. This is a drop-in match for today's workflow, so attach/observe works unchanged.
+2. **headless mode (later)**: spawn `claude -p ... --resume` per turn for cleaner structured output.
+
+Phases: P1 containerize one existing agent with tmux inside and the watcher unchanged; P2 server and HR create the containers; P3 DMs and rooms through the Router; P4 long-term memory and agent-to-agent DMs; P5 retire the host watcher.
+
+Open: how do existing host tmux agents and containerized agents coexist during migration (a bridge agent type that wraps a host tmux session)?
