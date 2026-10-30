@@ -11,8 +11,9 @@ case "$1" in
   log) curl -s "$S/agents/$2/log" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).log.forEach(t=>console.log(`\n[${t.at}] ${t.from}: ${t.text}\n  -> ${t.reply}`)))' ;;
   shell) docker exec -it "orcie-$2" bash ;;
   search) curl -s "$S/api/search?q=$(node -e 'console.log(encodeURIComponent(process.argv[1]))' "$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).results.forEach(r=>console.log(`${r.title} #${r.seq} ${r.from}: ${r.snippet.replace(/\[\[|\]\]/g,"*").replace(/\n/g," ")}`)))' ;;
+  add-external) j -X POST "$S/agents/external" -d "$(enc name="$2")" ;;
   recreate) j -X POST "$S/api/agents/$2/recreate" ;;
   recreate-all) for a in $(curl -s "$S/agents" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).forEach(a=>console.log(a.name)))'); do echo -n "$a: "; j -X POST "$S/api/agents/$a/recreate" | head -c 80; echo; done ;;
   rm) j -X DELETE "$S/agents/$2" ;;
-  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | log <agent> | shell <agent> | search <text> | recreate <agent> | recreate-all | rm <agent>"; exit 1 ;;
+  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | log <agent> | shell <agent> | search <text> | add-external <name> | recreate <agent> | recreate-all | rm <agent>"; exit 1 ;;
 esac

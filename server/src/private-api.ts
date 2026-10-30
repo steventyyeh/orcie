@@ -15,6 +15,8 @@ export type Ctx = {
   agents: Record<string, Agent>; convs: Record<string, Conv>;
   post(c: Conv, from: string, text: string): Msg; route(c: Conv, m: Msg): void;
   busy(convId: string): boolean; authMode(): string;
+  isExternal(name: string): boolean; touch(name: string): void; status(name: string): any;
+  inbox(name: string): any[]; ack(name: string, conv: string, upto: number): void; reply(name: string, conv: string, text: string, upto?: number): Msg;
 };
 
 const HOME = process.env.HOME!;
@@ -57,7 +59,7 @@ export function startPrivateApi(ctx: Ctx) {
 
   const view = (convId: string, m: Msg) => ({ conv: convId, seq: m.seq, from: m.from, text: m.text, at: m.at, ...(m.activity?.length ? { toolCalls: m.activity.length } : {}) });
   const roomOf = (id: string) => ctx.convs[id.startsWith("room:") ? id : `room:${id}`];
-  const okConv = (c?: Conv) => !!c && !c.members.some(denied) && !(c.kind === "dm" && denied(c.id.slice(3)));
+  const okConv = (c?: Conv) => !!c && !c.members.some(denied) && !(c.kind === "dm" && c.id.slice(3).split("+").some(denied));
 
   async function handle(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) {
     const ip = req.socket.remoteAddress ?? "?", t0 = Date.now();
@@ -75,7 +77,9 @@ export function startPrivateApi(ctx: Ctx) {
     }
     failures.delete(ip);
     let client = String(req.headers["x-orcie-client"] ?? "api").toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 20) || "api";
-    if (ctx.agents[client] || client === "user" || client === "system") return out(400, { error: "invalid X-Orcie-Client" }, client);
+    const bridge = ctx.isExternal(client); // acting as an external agent (e.g. muse): inbox + replies + status
+    if ((ctx.agents[client] && !bridge) || client === "user" || client === "system") return out(400, { error: "invalid X-Orcie-Client" }, client);
+    if (bridge) ctx.touch(client);
 
     const u = new URL(req.url ?? "/", "http://x"), path = u.pathname.replace(/\/+$/, "") || "/";
     let raw = ""; for await (const c of req) { raw += c; if (raw.length > 65536) return out(413, { error: "body too large" }, client); }
@@ -84,9 +88,9 @@ export function startPrivateApi(ctx: Ctx) {
     const num = (k: string, d: number, max: number) => Math.min(Math.max(Number(u.searchParams.get(k) ?? d) || d, 0), max);
 
     if (req.method === "GET" && (path === "/api/auth" || path === "/api/v1/auth"))
-      return out(200, { api: "ok", client, agentAuth: ctx.authMode() }, client); // agentAuth: how agent containers authenticate to Claude (token | host-login-copy | none)
+      return out(200, { api: "ok", client, ...(bridge ? { identity: { agent: client, kind: "external" } } : {}), agentAuth: ctx.authMode() }, client); // agentAuth: how agent containers authenticate to Claude (token | host-login-copy | none)
     if (req.method === "GET" && path === "/api/v1/agents")
-      return out(200, { agents: Object.values(ctx.agents).filter((a) => !denied(a.name)).map((a) => ({ name: a.name, model: a.model, role: a.profile?.role ?? null, busy: ctx.busy(`dm:${a.name}`), conversation: `dm:${a.name}` })) }, client);
+      return out(200, { agents: Object.values(ctx.agents).filter((a) => !denied(a.name)).map((a) => { const st = ctx.status(a.name); return { name: a.name, kind: st.kind, model: a.model, role: a.profile?.role ?? null, busy: ctx.busy(`dm:${a.name}`), conversation: `dm:${a.name}`, ...(st.kind === "external" ? { online: st.online, lastSeen: st.lastSeen, lastReply: st.lastReply, waiting: st.waiting } : {}) }; }) }, client);
     if (req.method === "GET" && path === "/api/v1/rooms")
       return out(200, { rooms: Object.values(ctx.convs).filter((c) => c.kind === "room" && okConv(c)).map((c) => ({ id: c.id, title: c.title, members: c.members, mode: c.mode ?? "parallel", messages: c.messages.length, busy: ctx.busy(c.id), last: c.messages.at(-1) ? view(c.id, c.messages.at(-1)!) : null })) }, client);
 
@@ -110,6 +114,24 @@ export function startPrivateApi(ctx: Ctx) {
         while (Date.now() - start < limit) { if (!ctx.busy(c!.id)) { quiet ||= Date.now(); if (Date.now() - quiet > 1500) { settled = true; break; } } else quiet = 0; await sleep(400); }
       }
       return out(settled === undefined ? 202 : 200, { sent: view(c!.id, sent), ...(settled === undefined ? {} : { settled, replies: c!.messages.filter((x) => x.seq > sent.seq && x.from !== "system").map((x) => view(c!.id, x)) }) }, client);
+    }
+    // ---- bridge (external agent) endpoints: only for a client acting as an external agent, e.g. X-Orcie-Client: muse ----
+    if (path === "/api/v1/inbox" || path === "/api/v1/inbox/ack" || path === "/api/v1/inbox/reply") {
+      if (!bridge) return out(403, { error: "inbox is only for external agents (send X-Orcie-Client: <external agent name>)" }, client);
+      const visible = () => ctx.inbox(client).filter((i) => okConv(ctx.convs[i.conversation]));
+      if (req.method === "GET" && path === "/api/v1/inbox") { // long-poll: ?wait=<seconds, max 30>
+        const until = Date.now() + num("wait", 0, 30) * 1000; let items = visible(), lastTouch = Date.now();
+        while (!items.length && Date.now() < until) { await sleep(500); if (Date.now() - lastTouch > 5000) { ctx.touch(client); lastTouch = Date.now(); } items = visible(); }
+        return out(200, { agent: client, conversations: items }, client);
+      }
+      const conv = String(body.conversation ?? ""), c = ctx.convs[conv];
+      if (!okConv(c)) return out(404, { error: "no such conversation" }, client);
+      if (req.method === "POST" && path === "/api/v1/inbox/ack") { ctx.ack(client, conv, Number(body.upto ?? c!.messages.at(-1)?.seq ?? 0)); return out(200, { ok: true }, client); }
+      if (req.method === "POST" && path === "/api/v1/inbox/reply") {
+        const text = String(body.text ?? "").trim(); if (!text) return out(400, { error: "text required" }, client); if (text.length > 20000) return out(413, { error: "text too long" }, client);
+        try { return out(200, { posted: view(conv, ctx.reply(client, conv, text, body.upto == null ? undefined : Number(body.upto))) }, client); }
+        catch (e: any) { return out(400, { error: e.message }, client); }
+      }
     }
     return out(404, { error: "not found" }, client);
   }

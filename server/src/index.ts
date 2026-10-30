@@ -10,7 +10,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 // Router rule (docs/DESIGN.md §6): a conversation's messages reach every agent member's session for that conversation.
 type Skill = { name: string; description: string; instructions: string };
 type Profile = { role: string; summary: string; systemPrompt: string; tools: { browser: boolean }; skills: Skill[]; memorySeed: string; resources: keyof typeof PRESETS; greeting?: string };
-type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile };
+type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; kind?: "claude" | "external"; lastSeen?: string; lastReply?: string };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
 type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number };
 type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential" };
@@ -107,8 +107,59 @@ function post(c: Conv, from: string, text: string, activity?: Item[], hop?: numb
 // In rooms, if new messages land while the agent is drafting, the draft is held and the agent re-reads everything
 // (pass 2) before posting a revised reply or staying silent, so it never answers without having taken in the latest.
 const fmtMsgs = (ms: Msg[]) => ms.map((m) => `[${m.from}] ${m.text}`).join("\n");
+// ---- external (bridged) agents, e.g. Muse ----
+// No container and no Claude: messages addressed to them wait in an inbox that the bridge client polls over the private
+// API (docs/PRIVATE_API.md); replies are posted back as that agent. Online/offline comes from the client's last request.
+const ONLINE_MS = 90_000;
+const pending = new Map<string, Set<string>>(); // external agent -> conversations with messages waiting for it
+for (const r of db.loadPending()) (pending.get(r.agent) ?? pending.set(r.agent, new Set()).get(r.agent)!).add(r.conv);
+const isExternal = (n: string) => agents[n]?.kind === "external";
+const online = (a: Agent) => !!a.lastSeen && Date.now() - Date.parse(a.lastSeen) < ONLINE_MS;
+const agentView = (a: Agent) => ({ name: a.name, model: a.model, kind: a.kind ?? "claude", profile: a.profile, ...(a.kind === "external" ? { online: online(a), lastSeen: a.lastSeen ?? null, lastReply: a.lastReply ?? null, waiting: pending.get(a.name)?.size ?? 0 } : {}) });
+function touchExternal(name: string) { const a = agents[name]; if (!a) return; const was = online(a); a.lastSeen = new Date().toISOString(); db.putAgent(a); if (!was) emit({ type: "state" }); }
+const clearPending = (agent: string, conv: string) => { if (pending.get(agent)?.delete(conv)) { db.delPending(agent, conv); emit({ type: "state" }); } };
+function enqueueExternal(c: Conv, agent: string): string | null {
+  if (!c.messages.some((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent && m.from !== "system")) return null;
+  if (!pending.get(agent)?.has(c.id)) { (pending.get(agent) ?? pending.set(agent, new Set()).get(agent)!).add(c.id); db.addPending(agent, c.id); emit({ type: "state" }); }
+  return `(queued for ${agent}, an external agent. It replies in this conversation when it next checks in${online(agents[agent]) ? "" : "; it is offline right now"}.)`;
+}
+const mv = (m: Msg) => ({ seq: m.seq, from: m.from, text: m.text, at: m.at });
+function inboxFor(name: string) {
+  const out: any[] = [];
+  for (const id of [...(pending.get(name) ?? [])]) {
+    const c = convs[id]; if (!c) { clearPending(name, id); continue; }
+    const cur = c.cursor[name] ?? 0, unseen = c.messages.filter((m) => m.seq > cur && m.from !== name && m.from !== "system");
+    if (!unseen.length) { clearPending(name, id); continue; }
+    out.push({ conversation: c.id, kind: c.kind, title: c.title, ...(c.kind === "room" ? { members: c.members } : {}), upto: c.messages.at(-1)!.seq,
+      messages: unseen.map(mv), context: c.messages.filter((m) => m.seq <= cur && m.from !== "system").slice(-10).map(mv) });
+  }
+  return out;
+}
+function ackFor(name: string, convId: string, upto: number) { // mark everything up to `upto` as seen by the external agent
+  const c = convs[convId]; if (!c) throw new Error("no such conversation");
+  c.cursor[name] = Math.max(c.cursor[name] ?? 0, Math.min(upto, c.messages.at(-1)?.seq ?? 0)); db.setCursor(c.id, name, c.cursor[name]);
+  if (!c.messages.some((m) => m.seq > c.cursor[name] && m.from !== name && m.from !== "system")) clearPending(name, c.id);
+}
+function replyAs(name: string, convId: string, text: string, upto?: number) {
+  const c = convs[convId]; if (!c) throw new Error("no such conversation");
+  const isPair = c.id.includes("+"), member = c.kind === "room" ? c.members.includes(name) : isPair ? c.id.slice(3).split("+").includes(name) : c.id === `dm:${name}`;
+  if (!member) throw new Error(`${name} is not part of ${c.id}`);
+  ackFor(name, c.id, upto ?? c.messages.at(-1)?.seq ?? 0);
+  const m = post(c, name, text); agents[name].lastReply = m.at; db.putAgent(agents[name]);
+  route(c, m); emit({ type: "state" }); return m;
+}
+function createExternalAgent(name: string) {
+  if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
+  if (agents[name]) throw new Error(`agent ${name} exists`);
+  agents[name] = { name, model: "external", container: "", port: 0, created: new Date().toISOString(), kind: "external" }; db.putAgent(agents[name]);
+  const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
+  post(dm, "system", `${name} joined as an external agent: no container, it talks to orcie through the private API.`);
+  emit({ type: "state" }); return agentView(agents[name]);
+}
+
 const active = new Map<string, number>(); // in-flight turns per conversation (for the private API's wait)
 async function deliver(c: Conv, agent: string): Promise<string | null> {
+  if (isExternal(agent)) return enqueueExternal(c, agent);
   active.set(c.id, (active.get(c.id) ?? 0) + 1);
   try { return await deliverInner(c, agent); } finally { active.set(c.id, (active.get(c.id) ?? 1) - 1); }
 }
@@ -129,6 +180,7 @@ async function deliverInner(c: Conv, agent: string): Promise<string | null> {
       const upto = c.messages.at(-1)!.seq, hop = Math.max(...unseen.map((m) => m.hop ?? 0)) + 1;
       const earlier = c.messages.filter((m) => m.seq <= (c.cursor[agent] ?? 0) && m.from !== "system").slice(-10);
       let text = fmtMsgs(unseen);
+      if (c.id.includes("+") && c.id.slice(3).split("+").some(isExternal)) text += "\n\n(If this needs no response, reply exactly NO_REPLY.)"; // lets an agent end an exchange with an external agent
       if (c.kind === "room") {
         text = pass === 0
           ? `You are in the chat room "${c.title}" (members: user, ${c.members.join(", ")}), a live group chat like a team Slack channel.\n\n${earlier.length ? `Earlier in the room (context):\n${fmtMsgs(earlier)}\n\n` : ""}New since you last looked:\n${text}\n\nFirst take in everything above, including what the other members have said, and understand where the discussion stands. Then decide whether you have something to contribute: answer questions, build on or push back on others' points, ask follow-ups (use @name to address someone), and move things toward what the user asked for. Avoid filler like "agreed" and don't repeat what was already said. If, having considered all of it, you have nothing to add right now, reply exactly NO_REPLY. Others may be drafting at the same moment as you.`
@@ -164,7 +216,14 @@ function kick(c: Conv, agent: string) {
 const chains = new Map<string, Promise<unknown>>();
 function route(c: Conv, m: Msg) {
   if (m.from === "system") return;
-  if (c.kind === "dm") return void (!agents[m.from] && kick(c, c.members[0])); // any human/external sender triggers the agent
+  if (c.kind === "dm") {
+    const pair = c.id.includes("+") ? c.id.slice(3).split("+") : null;
+    if (!pair) { const t = c.members[0]; if (m.from !== t) kick(c, t); return; } // dm:<agent>: anyone else (user, API client, external agent) triggers it
+    const other = pair.find((n) => n !== m.from); // agent<->agent DMs are answered synchronously by /dm, except with an external agent (async both ways)
+    const recent = c.messages.filter((x) => Date.now() - Date.parse(x.at) < 10 * 60_000).length; // loop guard: at most 12 messages per 10 minutes
+    if (other && agents[other] && (isExternal(m.from) || isExternal(other)) && recent < 12) kick(c, other);
+    return;
+  }
   const fromAgent = !!agents[m.from];
   const mentioned = c.members.filter((n) => new RegExp(`@${n}\\b`).test(m.text));
   const targets = (mentioned.length ? mentioned : c.members).filter((n) => n !== m.from);
@@ -238,7 +297,7 @@ createServer(async (req, res) => {
     let m: RegExpMatchArray | null;
 
     if (url === "/healthz") return json(200, { ok: true });
-    if (req.method === "GET" && url === "/api/state") return json(200, { agents: Object.values(agents), conversations: Object.values(convs).map(view) });
+    if (req.method === "GET" && url === "/api/state") return json(200, { agents: Object.values(agents).map(agentView), conversations: Object.values(convs).map(view) });
     if ((m = url.match(/^\/api\/conversations\/([^/]+)$/)) && req.method === "GET") {
       const c = convs[decodeURIComponent(m[1])]; return c ? json(200, c) : json(404, { error: "no such conversation" });
     }
@@ -272,7 +331,8 @@ createServer(async (req, res) => {
     }
 
     // CLI + in-container tools (orcie-dm)
-    if ((m = url.match(/^\/api\/agents\/([^/]+)\/recreate$/)) && req.method === "POST") return json(200, recreateAgent(m[1]));
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/recreate$/)) && req.method === "POST") { if (isExternal(m[1])) return json(400, { error: "external agents have no container" }); return json(200, recreateAgent(m[1])); }
+    if (req.method === "POST" && url === "/agents/external") return json(201, createExternalAgent(b.name));
     if (req.method === "GET" && url === "/api/auth") return json(200, { mode: readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none" });
     if (req.method === "GET" && url === "/agents") return json(200, Object.values(agents));
     if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5", b.profile ? clean(b.profile) : undefined));
@@ -289,7 +349,7 @@ createServer(async (req, res) => {
     if ((m = url.match(/^\/agents\/([^/]+)\/log$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/log"));
     if ((m = url.match(/^\/agents\/([^/]+)\/health$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/healthz"));
     if (req.method === "DELETE" && (m = url.match(/^\/agents\/([^/]+)$/)) && agents[m[1]]) {
-      docker("rm", "-f", agents[m[1]].container); db.delAgent(m[1]); delete agents[m[1]]; emit({ type: "state" }); return json(200, { deleted: m[1] });
+      if (!isExternal(m[1])) docker("rm", "-f", agents[m[1]].container); pending.delete(m[1]); db.delAgent(m[1]); delete agents[m[1]]; emit({ type: "state" }); return json(200, { deleted: m[1] });
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e instanceof Error ? e.message : e) }); }
@@ -297,7 +357,7 @@ createServer(async (req, res) => {
 
 // Private token-authenticated API for a trusted remote client over Tailscale (docs/PRIVATE_API.md).
 startPrivateApi({
-  agents, convs, post, route,
+  agents, convs, post, route, isExternal, touch: touchExternal, inbox: inboxFor, ack: ackFor, reply: replyAs, status: (n) => (agents[n] ? agentView(agents[n]) : null),
   busy: (id) => (active.get(id) ?? 0) > 0 || [...running].some((k) => k.startsWith(id + "|")),
   authMode: () => (readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none"),
 });

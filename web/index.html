@@ -90,6 +90,8 @@ aside{width:264px;background:var(--side);color:var(--side-fg);display:flex;flex-
 .item .ico{width:24px}.pair .av.tiny{width:15px;height:15px;font-size:8px;border-radius:50%;border-width:1.5px}.pair .av+.av{margin-left:-5px}
 .item.on .pair .av{border-color:var(--side-on)}
 #hdr .pair .av{border-color:var(--bg);width:24px;height:24px;font-size:11px;border-radius:50%}#hdr .pair .av+.av{margin-left:-8px}
+.pres.off{background:var(--faint)}
+.tag{font-size:10px;font-weight:600;letter-spacing:.02em;padding:1px 6px;border-radius:8px;background:var(--side-soft);color:var(--side-title);text-transform:uppercase}
 .pres{position:absolute;right:-3px;bottom:-3px;width:9px;height:9px;border-radius:50%;background:var(--green);border:2px solid var(--side)}
 .item.on .pres{border-color:var(--side-on)}
 .foot{display:flex;align-items:center;justify-content:space-between;padding:var(--s2) var(--s2) var(--s2) var(--s4);border-top:1px solid var(--side-line);font-size:12px;position:relative}
@@ -112,7 +114,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 #hdr .title{display:flex;align-items:center;gap:var(--s2);font-size:16px;font-weight:700;min-width:0}
 #hdr .title .ico{color:hsl(var(--h,220) 70% var(--name-l))}
 #hdr .status{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mute);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#hdr .status .sd{width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0}
+#hdr .status .sd{width:8px;height:8px;border-radius:50%;background:var(--dot,var(--green));flex-shrink:0}
 #hdr .status.busy .sd{background:var(--amber);animation:pulse 1.6s ease-in-out infinite}
 #hdr .sp{flex:1}
 .stack{display:flex;align-items:center;padding:3px 10px 3px 6px;border:1px solid var(--line-strong);border-radius:var(--r2);gap:var(--s2);font-size:13px;color:var(--mute);height:30px}
@@ -365,7 +367,7 @@ function section(id, title, addTitle, onAdd, items) {
   const list = el.querySelector(".list");
   items.forEach((i) => {
     const d = document.createElement("div"); d.className = "item" + (i.id === cur ? " on" : "") + (i.badge ? " unread" : "") + (i.busy ? " busy" : "");
-    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span>` + (i.busy ? '<span class="livedot" title="Working"></span>' : "") + (drafts[i.id] && i.id !== cur ? `<span class="draftmark" title="Unsent draft">${ic("pencil")}</span>` : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
+    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span>` + (i.tag ? `<span class="tag" title="External agent: bridged through the private API, no container">${i.tag}</span>` : "") + (i.busy ? '<span class="livedot" title="Working"></span>' : "") + (drafts[i.id] && i.id !== cur ? `<span class="draftmark" title="Unsent draft">${ic("pencil")}</span>` : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
     d.onclick = () => open(i.id); list.append(d);
   });
   if (!items.length) { const e = document.createElement("div"); e.className = "item none"; e.textContent = "Nothing here yet"; list.append(e); }
@@ -381,7 +383,7 @@ function drawNav() {
     section("agents", "Agents", "Hire an agent", openWizard, state.agents.map((a) => {
       const c = convs.find((x) => x.id === "dm:" + a.name) || { id: "dm:" + a.name };
       return { id: c.id, text: a.name, badge: unread(c), busy: busy.has(a.name),
-        icon: `<span class="ico"><span class="av sm" style="--h:${hue(a.name)}">${a.name[0].toUpperCase()}<span class="pres"></span></span></span>` }; })),
+        icon: `<span class="ico"><span class="av sm" style="--h:${hue(a.name)}">${a.name[0].toUpperCase()}<span class="pres ${a.kind === "external" && !a.online ? "off" : ""}"></span></span></span>`, tag: a.kind === "external" ? "ext" : "" }; })),
     section("aadm", "Agent DMs", "", null, convs.filter((c) => c.id.includes("+")).map((c) => ({ id: c.id, text: pairTitle(c.title), icon: `<span class="ico">${pairAv(c.title)}</span>`, badge: unread(c), soft: true }))),
   );
   nav.scrollTop = scroll;
@@ -398,11 +400,13 @@ function drawHeader() {
   const members = room ? conv.members : (ro ? conv.title.split(" \u2194 ") : [conv.members[0]]);
   const working = members.filter((m) => typing[cur]?.[m]);
   const agent = state.agents.find((a) => a.name === members[0]);
-  const sub = working.length ? `${working.join(", ")} working`
+  const ago = (iso) => { const s = (Date.now() - Date.parse(iso)) / 1000; return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
+  const ext = agent?.kind === "external" ? ["External agent", agent.online ? "online" : agent.lastSeen ? `offline, last seen ${ago(agent.lastSeen)}` : "offline", agent.lastReply ? `last reply ${ago(agent.lastReply)}` : "no reply yet", agent.waiting ? `${agent.waiting} waiting` : ""].filter(Boolean).join(", ") : "";
+  const sub = ext ? ext : working.length ? `${working.join(", ")} working`
     : room ? "" : ro ? "Read-only" : ["Active", agent?.profile?.role, agent?.model.replace("claude-", "")].filter(Boolean).join(", ");
   h.style.setProperty("--h", hue(room ? conv.title : members[0]));
   h.innerHTML = `<div class="title">${room ? `<span class="ico">${ic("hash")}</span>` : ro ? pairAv(conv.title) : av(members[0], "sm")}<span>${esc(pairTitle(conv.title))}</span></div>
-    <div class="status ${working.length ? "busy" : ""}" ${sub ? "" : "hidden"}><span class="sd"></span>${esc(sub)}</div><div class="sp"></div>`;
+    <div class="status ${working.length ? "busy" : ""}" ${sub ? "" : "hidden"} style="${agent?.kind === "external" && !agent.online ? "--dot:var(--faint)" : ""}"><span class="sd"></span>${esc(sub)}</div><div class="sp"></div>`;
   if (!room) return;
   const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
   st.innerHTML = `<span class="avs">${conv.members.slice(0, 4).map((m) => av(m, "xs")).join("")}</span><span>${conv.members.length} member${conv.members.length === 1 ? "" : "s"}</span>`; h.append(st);
@@ -668,6 +672,7 @@ es.onmessage = (ev) => {
     if (e.conv === cur) drawLive();
   }
 };
+setInterval(() => { refresh().catch(() => {}); }, 30000); // keeps external agents' online/offline status fresh
 es.onerror = () => { $("footText").textContent = "reconnecting…"; };
 refresh().then(() => { if (firstVisit) { state.conversations.forEach((c) => (readAt[c.id] = c.last?.seq ?? 0)); persist(); drawNav(); } const first = state.conversations.find((c) => c.kind === "room") || state.conversations[0]; if (first) open(first.id); });
 </script>

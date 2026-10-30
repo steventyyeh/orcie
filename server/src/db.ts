@@ -14,10 +14,13 @@ export function openDb(path: string) {
     create table if not exists cursors (conv text not null, agent text not null, seq integer not null, primary key (conv, agent));
     create virtual table if not exists messages_fts using fts5(text, conv unindexed, seq unindexed, sender unindexed, tokenize = 'porter unicode61');
   `);
+  // External (bridged) agents: no container; they poll an inbox over the private API. Columns added in place for existing databases.
+  for (const col of ["kind text not null default 'claude'", "last_seen text", "last_reply text"]) { try { db.exec(`alter table agents add column ${col}`); } catch { /* already there */ } }
+  db.exec("create table if not exists pending (agent text not null, conv text not null, primary key (agent, conv))");
   const q = (sql: string) => db.prepare(sql);
   const tx = (fn: () => void) => { db.exec("begin"); try { fn(); db.exec("commit"); } catch (e) { db.exec("rollback"); throw e; } };
 
-  const putAgent = q("insert into agents (name, model, container, created, profile) values (?, ?, ?, ?, ?) on conflict(name) do update set model = excluded.model, container = excluded.container, profile = excluded.profile");
+  const putAgent = q("insert into agents (name, model, container, created, profile, kind, last_seen, last_reply) values (?, ?, ?, ?, ?, ?, ?, ?) on conflict(name) do update set model = excluded.model, container = excluded.container, profile = excluded.profile, kind = excluded.kind, last_seen = excluded.last_seen, last_reply = excluded.last_reply");
   const putConv = q("insert into conversations (id, kind, title, mode, created) values (?, ?, ?, ?, ?) on conflict(id) do update set title = excluded.title, mode = excluded.mode");
   const addMember = q("insert or ignore into members (conv, name) values (?, ?)");
   const addMsg = q("insert or replace into messages (conv, seq, sender, text, at, hop, activity) values (?, ?, ?, ?, ?, ?, ?)");
@@ -30,7 +33,7 @@ export function openDb(path: string) {
   return {
     loadAll() {
       const agents: Record<string, any> = {}, convs: Record<string, any> = {};
-      for (const r of q("select * from agents").all() as any[]) agents[r.name] = { name: r.name, model: r.model, container: r.container, port: 0, created: r.created, ...(r.profile ? { profile: JSON.parse(r.profile) } : {}) };
+      for (const r of q("select * from agents").all() as any[]) agents[r.name] = { name: r.name, model: r.model, container: r.container, port: 0, created: r.created, kind: r.kind ?? 'claude', ...(r.last_seen ? { lastSeen: r.last_seen } : {}), ...(r.last_reply ? { lastReply: r.last_reply } : {}), ...(r.profile ? { profile: JSON.parse(r.profile) } : {}) };
       for (const r of q("select * from conversations order by created").all() as any[]) convs[r.id] = { id: r.id, kind: r.kind, title: r.title, mode: r.mode ?? undefined, members: [], messages: [], cursor: {} };
       for (const r of q("select * from members").all() as any[]) convs[r.conv]?.members.push(r.name);
       for (const r of q("select * from messages order by conv, seq").all() as any[])
@@ -38,7 +41,10 @@ export function openDb(path: string) {
       for (const r of q("select * from cursors").all() as any[]) if (convs[r.conv]) convs[r.conv].cursor[r.agent] = r.seq;
       return { agents, convs };
     },
-    putAgent: (a: any) => void putAgent.run(a.name, a.model, a.container, a.created, a.profile ? JSON.stringify(a.profile) : null),
+    putAgent: (a: any) => void putAgent.run(a.name, a.model, a.container, a.created, a.profile ? JSON.stringify(a.profile) : null, a.kind ?? 'claude', a.lastSeen ?? null, a.lastReply ?? null),
+    addPending: (agent: string, conv: string) => void q('insert or ignore into pending (agent, conv) values (?, ?)').run(agent, conv),
+    delPending: (agent: string, conv: string) => void q('delete from pending where agent = ? and conv = ?').run(agent, conv),
+    loadPending: () => (q('select agent, conv from pending').all() as any[]),
     delAgent: (name: string) => void q("delete from agents where name = ?").run(name),
     putConv: (c: any) => tx(() => { putConv.run(c.id, c.kind, c.title, c.mode ?? null, new Date().toISOString()); for (const m of c.members) addMember.run(c.id, m); }),
     addMsg: (conv: string, m: any) => tx(() => {
