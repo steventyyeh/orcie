@@ -130,7 +130,8 @@ function inboxFor(name: string) {
     const c = convs[id]; if (!c) { clearPending(name, id); continue; }
     const cur = c.cursor[name] ?? 0, unseen = c.messages.filter((m) => m.seq > cur && m.from !== name && m.from !== "system");
     if (!unseen.length) { clearPending(name, id); continue; }
-    out.push({ conversation: c.id, kind: c.kind, title: c.title, ...(c.kind === "room" ? { members: c.members } : {}), upto: c.messages.at(-1)!.seq,
+    const reason = c.kind === "dm" ? "dm" : unseen.some((m) => new RegExp(`@${name}\\b`).test(m.text)) ? "mention" : "room"; // why it is here: direct message, @mention, or general room traffic
+    out.push({ conversation: c.id, kind: c.kind, reason, title: c.title, ...(c.kind === "room" ? { members: c.members } : {}), upto: c.messages.at(-1)!.seq,
       messages: unseen.map(mv), context: c.messages.filter((m) => m.seq <= cur && m.from !== "system").slice(-10).map(mv) });
   }
   return out;
@@ -145,8 +146,15 @@ function replyAs(name: string, convId: string, text: string, upto?: number) {
   const isPair = c.id.includes("+"), member = c.kind === "room" ? c.members.includes(name) : isPair ? c.id.slice(3).split("+").includes(name) : c.id === `dm:${name}`;
   if (!member) throw new Error(`${name} is not part of ${c.id}`);
   ackFor(name, c.id, upto ?? c.messages.at(-1)?.seq ?? 0);
+  workingExternal(name, c.id, false);
   const m = post(c, name, text); agents[name].lastReply = m.at; db.putAgent(agents[name]);
   route(c, m); emit({ type: "state" }); return m;
+}
+const workTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function workingExternal(name: string, conv: string, on: boolean) { // lets the bridge show "muse is working" while it composes (auto-clears after 2 min)
+  const k = `${name}|${conv}`; clearTimeout(workTimers.get(k)); workTimers.delete(k);
+  emit({ type: "typing", conv, agent: name, on });
+  if (on) workTimers.set(k, setTimeout(() => { workTimers.delete(k); emit({ type: "typing", conv, agent: name, on: false }); }, 120_000));
 }
 function createExternalAgent(name: string) {
   if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
@@ -357,7 +365,7 @@ createServer(async (req, res) => {
 
 // Private token-authenticated API for a trusted remote client over Tailscale (docs/PRIVATE_API.md).
 startPrivateApi({
-  agents, convs, post, route, isExternal, touch: touchExternal, inbox: inboxFor, ack: ackFor, reply: replyAs, status: (n) => (agents[n] ? agentView(agents[n]) : null),
+  agents, convs, post, route, isExternal, touch: touchExternal, inbox: inboxFor, working: workingExternal, ack: ackFor, reply: replyAs, status: (n) => (agents[n] ? agentView(agents[n]) : null),
   busy: (id) => (active.get(id) ?? 0) > 0 || [...running].some((k) => k.startsWith(id + "|")),
   authMode: () => (readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none"),
 });

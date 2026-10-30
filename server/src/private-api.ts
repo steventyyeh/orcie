@@ -16,7 +16,7 @@ export type Ctx = {
   post(c: Conv, from: string, text: string): Msg; route(c: Conv, m: Msg): void;
   busy(convId: string): boolean; authMode(): string;
   isExternal(name: string): boolean; touch(name: string): void; status(name: string): any;
-  inbox(name: string): any[]; ack(name: string, conv: string, upto: number): void; reply(name: string, conv: string, text: string, upto?: number): Msg;
+  inbox(name: string): any[]; working(name: string, conv: string, on: boolean): void; ack(name: string, conv: string, upto: number): void; reply(name: string, conv: string, text: string, upto?: number): Msg;
 };
 
 const HOME = process.env.HOME!;
@@ -116,7 +116,7 @@ export function startPrivateApi(ctx: Ctx) {
       return out(settled === undefined ? 202 : 200, { sent: view(c!.id, sent), ...(settled === undefined ? {} : { settled, replies: c!.messages.filter((x) => x.seq > sent.seq && x.from !== "system").map((x) => view(c!.id, x)) }) }, client);
     }
     // ---- bridge (external agent) endpoints: only for a client acting as an external agent, e.g. X-Orcie-Client: muse ----
-    if (path === "/api/v1/inbox" || path === "/api/v1/inbox/ack" || path === "/api/v1/inbox/reply") {
+    if (path === "/api/v1/inbox" || path === "/api/v1/inbox/ack" || path === "/api/v1/inbox/reply" || path === "/api/v1/inbox/working") {
       if (!bridge) return out(403, { error: "inbox is only for external agents (send X-Orcie-Client: <external agent name>)" }, client);
       const visible = () => ctx.inbox(client).filter((i) => okConv(ctx.convs[i.conversation]));
       if (req.method === "GET" && path === "/api/v1/inbox") { // long-poll: ?wait=<seconds, max 30>
@@ -126,6 +126,7 @@ export function startPrivateApi(ctx: Ctx) {
       }
       const conv = String(body.conversation ?? ""), c = ctx.convs[conv];
       if (!okConv(c)) return out(404, { error: "no such conversation" }, client);
+      if (req.method === "POST" && path === "/api/v1/inbox/working") { ctx.working(client, conv, body.on !== false); return out(200, { ok: true }, client); }
       if (req.method === "POST" && path === "/api/v1/inbox/ack") { ctx.ack(client, conv, Number(body.upto ?? c!.messages.at(-1)?.seq ?? 0)); return out(200, { ok: true }, client); }
       if (req.method === "POST" && path === "/api/v1/inbox/reply") {
         const text = String(body.text ?? "").trim(); if (!text) return out(400, { error: "text required" }, client); if (text.length > 20000) return out(413, { error: "text too long" }, client);

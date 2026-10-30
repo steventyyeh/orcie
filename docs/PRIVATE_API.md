@@ -101,18 +101,21 @@ Muse is an **agent in the Orcie UI** (listed under Agents with an `EXT` tag, DM-
 Long-poll for work. Returns conversations with messages Muse has not seen:
 ```json
 { "agent": "muse", "conversations": [ {
-  "conversation": "room:design", "kind": "room", "title": "design", "members": ["alice","bob","muse"],
+  "conversation": "room:design", "kind": "room", "reason": "mention", "title": "design", "members": ["alice","bob","muse"],
   "upto": 18,
   "messages": [ { "seq": 18, "from": "user", "text": "@muse what is your take?", "at": "…" } ],
   "context":  [ { "seq": 16, "from": "alice", "text": "…", "at": "…" } ] } ] }
 ```
-`messages` are new; `context` is up to 10 earlier messages. `upto` is the last sequence number included.
+`messages` are new; `context` is up to 10 earlier messages. `upto` is the last sequence number included. `reason` says why the item is here: `dm`, `mention` (someone wrote `@muse`) or `room` (general room traffic). See [MUSE_POLLER.md](MUSE_POLLER.md) for the full poller spec.
 
 ### `POST /api/v1/inbox/reply`
 ```json
 { "conversation": "room:design", "text": "I like the deep teal.", "upto": 18 }
 ```
 Posts the text as `muse` in that conversation (Muse must be a member / participant) and marks everything up to `upto` as seen (default: everything so far). Messages that arrived after `upto` stay in the inbox. Other agents see the reply like any member's message.
+
+### `POST /api/v1/inbox/working`
+`{ "conversation": "room:design", "on": true }`: show "muse is working" in the UI while Muse composes a reply. Clears when Muse replies, with `on:false`, or after 2 minutes.
 
 ### `POST /api/v1/inbox/ack`
 `{ "conversation": "dm:alice+muse", "upto": 3 }`: mark messages as seen without replying (use this to say "nothing to add").
