@@ -1,0 +1,15 @@
+#!/bin/bash
+# orcie CLI (POC). Usage: orcie create|ls|send|dm|screen|attach|rm ...
+S="${ORCIE_SERVER:-http://127.0.0.1:8080}"
+j() { curl -s -H 'content-type: application/json' "$@"; echo; }
+enc() { node -e 'console.log(JSON.stringify(Object.fromEntries(process.argv.slice(1).map(a=>a.split(/=(.*)/s).slice(0,2)))))' "$@"; }
+case "$1" in
+  create) j -X POST "$S/agents" -d "$(enc name="$2" ${3:+model="$3"})" ;;
+  ls) j "$S/agents" ;;
+  send) j -X POST "$S/dm" -d "$(enc from=user to="$2" text="$3")" ;;
+  dm) j -X POST "$S/dm" -d "$(enc from="$2" to="$3" text="$4")" ;;
+  screen) curl -s "$S/agents/$2/screen" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).screen))' ;;
+  attach) docker exec -it "orcie-$2" tmux attach -t agent ;;
+  rm) j -X DELETE "$S/agents/$2" ;;
+  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | screen <agent> | attach <agent> | rm <agent>"; exit 1 ;;
+esac

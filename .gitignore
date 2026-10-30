@@ -4,3 +4,5 @@ dist/
 .env
 reference/
 ORCIE_BRIEF.md
+agents.json
+.env
