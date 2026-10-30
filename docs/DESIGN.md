@@ -4,7 +4,7 @@ Status: draft v0.1 (2026-10-29) · Owner: orcie-commander
 
 Orcie is a multi-agent platform that combines **Muse** (long-running, containerized coding agents) with **Slack** (a chat UI of DMs and rooms). You hire agents, talk to them one-on-one, put them in rooms together, and they can DM each other. Every agent keeps its own memory, and that memory spans all of its conversations.
 
-> Note: the Muse reference (`parallel-coding-agents.zip`) was not readable when this was written (macOS-protected folder). Muse-derived choices below are marked **[verify vs Muse]** and should be reconciled once the archive is available.
+> Muse reference: `/Users/steveyeh/parallel-coding-agents` (architecture doc, `docker-compose.yml`, watcher). See §10 for what orcie takes from Muse and where it deliberately differs.
 
 ## 1. Goals and non-goals
 
@@ -74,7 +74,7 @@ Agent-local store (on the agent volume, `/data`):
 
 ## 4. Session and memory model
 
-**Sessions.** An agent has many sessions, one per conversation it participates in (DM with user, DM with another agent, each room). A session is a resumable Claude CLI conversation (`claude --resume <id>` or equivalent) **[verify vs Muse]**. Sessions are created lazily on first message.
+**Sessions.** An agent has many sessions, one per conversation it participates in (DM with user, DM with another agent, each room). A session is a resumable Claude CLI conversation (`claude --resume <id>` or equivalent). Sessions are created lazily on first message.
 
 **Short-term memory** = the session transcript. It is private to that (agent, conversation) pair and is what the Claude CLI already maintains.
 
@@ -94,7 +94,7 @@ Agent-local store (on the agent volume, `/data`):
 ```
 
 1. **Create** (HR button): user picks model, name, initial prompt/config. Server writes the agent row, creates the volume, starts the container, waits for harness `/healthz`.
-2. **Run**: container is long-running. Idle sessions are cheap (the CLI process is spawned per turn, not kept alive) **[verify vs Muse]**.
+2. **Run**: container is long-running. Idle sessions are cheap (the CLI process is spawned per turn, not kept alive).
 3. **Pause/resume**: stop/start container; volume persists.
 4. **Failure**: container manager restarts with backoff; after N failures the agent is `failed` and surfaced in the UI.
 5. **Retire**: container removed; volume retained for a grace period, then purged on request.
@@ -137,7 +137,7 @@ Milestones: M0 scaffold + design → M1 container manager + harness echo → M2 
 
 ## 9. Open questions
 
-1. **Muse parity**: exact Muse session/container conventions (needs the reference archive).
+1. **Muse delivery model**: Muse routes via file inbox plus watcher; orcie uses an HTTP harness API. Do we also keep an on-disk, auditable message log per agent (§10)?
 2. **Claude CLI auth in containers**: API key vs. mounted subscription login; what is acceptable for an open-source default?
 3. **Room turn-taking**: is "all agents respond to everything" tolerable at scale, or do we need a moderator/arbiter?
 4. **Memory summarization**: which model, how often, and how do we prevent drift/bloat?
@@ -145,3 +145,19 @@ Milestones: M0 scaffold + design → M1 container manager + harness echo → M2 
 6. **Isolation**: network egress policy for containers; per-agent resource limits defaults.
 7. **Stack**: TypeScript/Node everywhere (proposed) vs. Python harness.
 8. **Agent-to-agent autonomy**: can agents open DMs freely, or only with user-approved contacts?
+
+## 10. Muse alignment
+
+Taken from Muse (`linux-parallel-coding-agents-architecture.md`, `docker-compose.yml`):
+- **One long-running container per agent**, `restart: unless-stopped`, its own workspace volume, no host home mount.
+- **Per-container secrets and resource limits** (Muse example: 2 CPUs / 4 GB); no shared keys, nothing secret in messages or git.
+- **Files and logs are the source of truth, not chat transcripts** (transcripts get compressed and lost). This backs the file-based long-term memory in §4; each agent also keeps a log file.
+- **Large payloads go by pointer**: Muse found large pasted prompts get truncated. The harness passes long messages to the Claude CLI as a file path, not inline.
+- **Heartbeat and timeout**: silent failures are the main Muse failure mode, so the container manager marks a session or agent failed on missed heartbeat or turn timeout.
+- **Dangerous operations need human approval** (rm -rf, push to main, deploy); carried over as a harness policy default.
+- **Evolution rule**: change one layer at a time (Muse: tmux to Docker).
+
+Deliberate differences:
+- Muse is coordinator-to-worker task dispatch with filename-prefix routing. Orcie is conversational (DMs and rooms) with membership-based fan-out (§6).
+- Muse workers have no cross-task memory beyond files. Orcie adds per-agent long-term memory across sessions.
+- Muse has no notion of sessions; sessions come from the Claude CLI's resumable conversations (AgentCore-like).
