@@ -185,13 +185,18 @@ async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
   if (!unseen.length) return null;
   const upto = c.messages.at(-1)!.seq, hop = Math.max(...unseen.map((m) => m.hop ?? 0)) + 1;
   emit({ type: "typing", conv: c.id, agent, on: true });
+  const items: Item[] = [];
+  const onEvent = (e: any) => { // same shape as container agents' tool events, so the UI shows the live tool banner
+    if (e.kind === "tool") { const item = { id: e.id, name: e.name, input: summarize(e.input) }; items.push(item); emit({ type: "activity", conv: c.id, agent, item }); }
+    else if (e.kind === "tool_result") { const it = items.find((x) => x.id === e.id); if (it) { it.result = e.preview; it.ok = e.ok; emit({ type: "activity", conv: c.id, agent, update: { id: e.id, result: e.preview, ok: e.ok } }); } }
+  };
   try {
     let text = fmtMsgs(unseen);
     if (c.kind === "room") text = `(Orcie chat room "${c.title}", members: user, ${c.members.join(", ")}. Reply as a normal chat message, or exactly NO_REPLY if you have nothing to add.)\n${text}`;
     else if (c.id.includes("+")) text += "\n\n(If this needs no response, reply exactly NO_REPLY.)";
-    const reply = (await tmuxBridge.turn({ session: agents[agent].container, from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conv: c.id })).trim();
+    const reply = (await tmuxBridge.turn({ session: agents[agent].container, from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conv: c.id, onEvent })).trim();
     c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
-    if (reply && !/^NO_REPLY\b/.test(reply)) { const m = post(c, agent, reply, [], hop); agents[agent].lastReply = m.at; db.putAgent(agents[agent]); route(c, m); }
+    if (reply && !/^NO_REPLY\b/.test(reply)) { const m = post(c, agent, reply, items, hop); agents[agent].lastReply = m.at; db.putAgent(agents[agent]); route(c, m); }
     return reply;
   } catch (e) {
     c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);

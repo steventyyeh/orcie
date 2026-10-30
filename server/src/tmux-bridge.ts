@@ -41,7 +41,8 @@ export function extractReply(text: string, marker: string): string {
 const PROJECTS = `${process.env.HOME}/.claude/projects`;
 const projectDir = (session: string) => { try { return `${PROJECTS}/${tmux("display", "-p", "-t", `=${session}:`, "#{pane_current_path}").trim().replace(/[^A-Za-z0-9]/g, "-")}`; } catch { return ""; } };
 const entryText = (j: any) => { const c = j?.message?.content; return typeof c === "string" ? c : Array.isArray(c) ? c.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n") : ""; };
-function fromTranscript(dir: string, marker: string): { text: string; done: boolean } | null {
+export type ToolEvent = { kind: "tool"; id: string; name: string; input: any } | { kind: "tool_result"; id: string; preview: string; ok: boolean };
+function fromTranscript(dir: string, marker: string): { text: string; done: boolean; events: ToolEvent[] } | null {
   if (!dir || !existsSync(dir)) return null;
   const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => ({ f: `${dir}/${f}`, t: statSync(`${dir}/${f}`).mtimeMs })).sort((a, b) => b.t - a.t).slice(0, 4);
   for (const { f } of files) {
@@ -53,13 +54,18 @@ function fromTranscript(dir: string, marker: string): { text: string; done: bool
     const final = after.slice(lastResult + 1).filter((j) => j.type === "assistant");
     const text = final.map(entryText).filter(Boolean).join("\n\n").trim();
     const lastA = after.filter((j) => j.type === "assistant").at(-1);
-    return { text, done: !!lastA && lastA.message?.stop_reason === "end_turn" };
+    const events: ToolEvent[] = [];
+    for (const j of after) for (const b of Array.isArray(j.message?.content) ? j.message.content : []) {
+      if (b?.type === "tool_use") events.push({ kind: "tool", id: b.id, name: b.name, input: b.input });
+      else if (b?.type === "tool_result") { const c = typeof b.content === "string" ? b.content : Array.isArray(b.content) ? b.content.map((x: any) => x?.text ?? "").join("\n") : ""; events.push({ kind: "tool_result", id: b.tool_use_id, preview: c.slice(0, 400), ok: !b.is_error }); }
+    }
+    return { text, done: !!lastA && lastA.message?.stop_reason === "end_turn", events };
   }
   return null;
 }
 
 const locks = new Map<string, Promise<unknown>>();
-export type TmuxTurn = { session: string; from: string; text: string; conv: string; onStatus?: (s: string) => void };
+export type TmuxTurn = { session: string; from: string; text: string; conv: string; onEvent?: (e: ToolEvent) => void };
 // Types one message into the pane and resolves with the reply text ("" if the session produced nothing).
 export function turn(t: TmuxTurn): Promise<string> {
   const run = async () => {
@@ -76,14 +82,15 @@ export function turn(t: TmuxTurn): Promise<string> {
     tmux("send-keys", "-t", `=${t.session}:`, "-l", body);
     await sleep(400); tmux("send-keys", "-t", `=${t.session}:`, "Enter");
     // wait for the reply to land in the transcript and the session to go idle; fall back to the screen if there is no transcript
-    const dir = projectDir(t.session), start = Date.now(); let last = "", still = 0, sawBusy = false;
+    const dir = projectDir(t.session), start = Date.now(); let last = "", still = 0, sawBusy = false; const seen = new Set<string>();
     while (Date.now() - start < 15 * 60_000) {
       await sleep(1500);
       if (!sessionAlive(t.session)) throw new Error(`tmux session ${t.session} ended`);
       const p = pane(t.session);
-      if (busy(p)) { sawBusy = true; still = 0; t.onStatus?.("working"); } else if (p === last) still++; else still = 0;
+      if (busy(p)) { sawBusy = true; still = 0; } else if (p === last) still++; else still = 0;
       last = p;
       const tr = fromTranscript(dir, marker);
+      for (const e of tr?.events ?? []) { const k = `${e.kind}${e.id}`; if (!seen.has(k)) { seen.add(k); t.onEvent?.(e); } } // live tool activity for the UI
       if (tr?.done && still >= 2) return tr.text || "";
       if (!tr && still >= 4 && Date.now() - start > 60_000) return extractReply(p, marker); // no transcript found: best-effort screen scrape
     }
