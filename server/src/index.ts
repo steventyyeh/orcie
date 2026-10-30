@@ -58,6 +58,7 @@ const emit = (e: unknown) => clients.forEach((c) => c.write(`data: ${JSON.string
 // stored in ~/.orcie/token (does not rotate, safe to share). Fallback: a copy of the host login (scripts/export-login.sh),
 // which can go stale when the host or another container refreshes the shared refresh token.
 const TOKEN_FILE = process.env.ORCIE_TOKEN_FILE ?? `${process.env.HOME}/.orcie/token`;
+const GIT_DIR = process.env.ORCIE_GIT_DIR ?? `${process.env.HOME}/.orcie/git`; // shared git credential (token file), mounted read-only into every agent
 const readToken = () => (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "");
 function runContainer(name: string, model: string, profile?: Profile) {
   const token = readToken();
@@ -66,6 +67,7 @@ function runContainer(name: string, model: string, profile?: Profile) {
   execFileSync("docker", ["run", "-d", "--name", container, "--restart", "unless-stopped", "--cpus", res.cpus, "--memory", res.memory,
     "-v", `orcie-${name}-data:/data`, ...(token ? ["-e", "CLAUDE_CODE_OAUTH_TOKEN"] : ["-v", `${CREDS}:/creds`]), "-p", "127.0.0.1:0:9090",
     "--add-host", "host.docker.internal:host-gateway",
+    ...(existsSync(`${GIT_DIR}/token`) ? ["-v", `${GIT_DIR}:/gitcreds:ro`] : []),
     "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_MODEL=${model}`,
     ...(profile ? ["-e", `ORCIE_PROFILE=${Buffer.from(JSON.stringify(profile)).toString("base64")}`] : []), IMAGE],
     { encoding: "utf8", env: { ...process.env, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) } }); // token passed by env, not on the command line

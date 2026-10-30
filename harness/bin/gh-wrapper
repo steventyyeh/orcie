@@ -1,0 +1,4 @@
+#!/bin/bash
+# gh with the shared token (read at call time)
+[ -r /gitcreds/token ] && export GH_TOKEN="$(cat /gitcreds/token)"
+exec /usr/bin/gh "$@"
