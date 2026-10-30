@@ -103,7 +103,8 @@ function trigger(c: Conv, text: string) {
 }
 
 // ---- HTTP ----
-const view = (c: Conv) => ({ id: c.id, kind: c.kind, title: c.title, members: c.members, last: c.messages.at(-1) ?? null, count: c.messages.length });
+const view = (c: Conv) => ({ id: c.id, kind: c.kind, title: c.title, members: c.members, last: c.messages.at(-1) ?? null, count: c.messages.length,
+  inbound: c.messages.filter((m) => m.from !== "user" && m.from !== "system").map((m) => m.seq) }); // seqs of messages the user hasn't authored (for unread counts)
 
 createServer(async (req, res) => {
   const json = (code: number, b: unknown) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(b)); };
