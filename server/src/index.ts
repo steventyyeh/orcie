@@ -166,18 +166,18 @@ const clean = (p: any): Profile => ({
   skills: (Array.isArray(p.skills) ? p.skills : []).slice(0, 6).map((s: any) => ({ name: String(s.name ?? "skill").slice(0, 40), description: String(s.description ?? "").slice(0, 300), instructions: String(s.instructions ?? "").slice(0, 6000) })),
   memorySeed: String(p.memorySeed ?? "").slice(0, 4000), resources: p.resources in PRESETS ? p.resources : "standard", greeting: p.greeting ? String(p.greeting).slice(0, 400) : undefined,
 });
-const hrPrompt = (name: string, model: string, history: { role: string; text: string }[]) => {
-  const answers = history.filter((h) => h.role === "user").length;
-  return `You are the HR onboarding specialist for an AI-agent platform. Each agent is a Claude CLI instance in its own Docker container with a shell, file access, persistent memory, optional headless-browser tool (Playwright), and optional skills (SKILL.md playbooks). You are onboarding a new agent named "${name}" (model ${model}). Interview the human manager to learn what the agent is for.
+const hrPrompt = (name: string, model: string, history: { role: string; text: string }[], current: Profile | null) =>
+  `You are the HR onboarding specialist for an AI-agent platform. Each agent is a Claude CLI instance in its own Docker container with a shell, file access, persistent memory, an optional headless-browser tool (Playwright), and optional skills (SKILL.md playbooks). You are co-designing the configuration of a new agent named "${name}" (model ${model}) with the manager, through an ongoing conversation. You maintain a draft profile that the manager sees live next to the chat.
 
-Rules:
-- Ask ONE short question at a time covering: purpose, typical tasks, systems/sites/tools it needs, tone/style, hard boundaries. At most 4 questions in total.
-- When you have enough, or the manager says they are done${answers >= 4 ? " (you have asked enough already: output the profile NOW)" : ""}, reply with ONLY a JSON object inside a \`\`\`json block with keys: role (short title), summary (one sentence), systemPrompt (markdown instructions to the agent in second person: specific duties, workflow, tone, boundaries), tools ({"browser": boolean}), skills (1-4 items of {name (kebab-case), description (when to use it), instructions (markdown steps)}), memorySeed (markdown facts the agent should always remember), resources ("small" | "standard" | "large"), greeting (one sentence the agent says when introduced).
-- Otherwise reply with ONLY your next question as plain text. No preamble.
+Each turn:
+1. Reply to the manager in 1-4 short sentences: either ask ONE clarifying question (purpose, typical tasks, systems/sites/tools, tone, boundaries, what success looks like), or say concretely what you changed and why. Do not repeat the whole profile in the chat.
+2. As soon as you can propose anything (after the first answer at the latest), or whenever you change something, end your reply with the COMPLETE updated profile in one \`\`\`json block with keys: role (short title), summary (one sentence), systemPrompt (markdown instructions to the agent in second person: duties, workflow, tone, boundaries), tools ({"browser": boolean}), skills (0-5 items of {name (kebab-case), description (when to use it), instructions (markdown steps)}), memorySeed (markdown facts the agent should always remember), resources ("small" | "standard" | "large"), greeting (one sentence the agent says when introduced). Omit the block only while you still know nothing about the agent's purpose.
+3. The manager may edit the profile by hand between turns. The current profile below is the source of truth: keep their edits unless they ask you to change them.
+
+Current profile: ${current ? JSON.stringify(current) : "(none yet)"}
 
 Conversation so far:
-${history.map((h) => `${h.role === "user" ? "MANAGER" : "HR"}: ${h.text}`).join("\n") || "(none yet: ask your first question)"}`;
-};
+${history.map((h) => `${h.role === "user" ? "MANAGER" : "HR"}: ${h.text}`).join("\n") || "(none yet: greet the manager briefly and ask your first question)"}`;
 function claudeOnce(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const p = spawn("claude", ["-p", "--output-format", "json", "--tools", "", "--model", "claude-sonnet-5-5"], { cwd: mkdtempSync(`${tmpdir()}/orcie-hr-`), env: { ...process.env, ANTHROPIC_API_KEY: "" } });
@@ -186,11 +186,13 @@ function claudeOnce(prompt: string): Promise<string> {
     p.stdin.end(prompt);
   });
 }
-async function onboardingTurn(name: string, model: string, history: { role: string; text: string }[]) {
-  const text = (await claudeOnce(hrPrompt(name, model, history))).trim();
-  const j = text.match(/```json\s*([\s\S]*?)```/)?.[1] ?? (text.startsWith("{") ? text : null);
-  if (j) { try { return { done: true, profile: clean(JSON.parse(j)) }; } catch { /* fall through: treat as a question */ } }
-  return { done: false, question: text };
+async function onboardingTurn(name: string, model: string, history: { role: string; text: string }[], current: any) {
+  const text = (await claudeOnce(hrPrompt(name, model, history, current ? clean(current) : null))).trim();
+  const blocks = [...text.matchAll(/```json\s*([\s\S]*?)```/g)], last = blocks.at(-1);
+  let profile: Profile | null = null;
+  if (last) { try { profile = clean(JSON.parse(last[1])); } catch { /* keep the previous profile */ } }
+  const message = (last ? text.replace(last[0], "") : text).trim() || (profile ? "I've updated the plan on the right." : "");
+  return { message, profile };
 }
 
 // ---- HTTP ----
@@ -227,7 +229,7 @@ createServer(async (req, res) => {
     }
     if (req.method === "POST" && url === "/api/onboarding") {
       if (!/^[a-z][a-z0-9-]{0,30}$/.test(b.name ?? "")) return json(400, { error: "invalid name" });
-      return json(200, await onboardingTurn(b.name, b.model ?? "claude-sonnet-5-5", Array.isArray(b.history) ? b.history : []));
+      return json(200, await onboardingTurn(b.name, b.model ?? "claude-sonnet-5-5", Array.isArray(b.history) ? b.history : [], b.profile ?? null));
     }
     if (req.method === "POST" && url === "/api/rooms") {
       const members: string[] = (b.members ?? []).filter((n: string) => agents[n]);
