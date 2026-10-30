@@ -2,6 +2,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, renameSync } from "node:fs";
 import { openDb } from "./db.ts";
+import { startPrivateApi } from "./private-api.ts";
 import { tmpdir } from "node:os";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
@@ -106,7 +107,12 @@ function post(c: Conv, from: string, text: string, activity?: Item[], hop?: numb
 // In rooms, if new messages land while the agent is drafting, the draft is held and the agent re-reads everything
 // (pass 2) before posting a revised reply or staying silent, so it never answers without having taken in the latest.
 const fmtMsgs = (ms: Msg[]) => ms.map((m) => `[${m.from}] ${m.text}`).join("\n");
+const active = new Map<string, number>(); // in-flight turns per conversation (for the private API's wait)
 async function deliver(c: Conv, agent: string): Promise<string | null> {
+  active.set(c.id, (active.get(c.id) ?? 0) + 1);
+  try { return await deliverInner(c, agent); } finally { active.set(c.id, (active.get(c.id) ?? 1) - 1); }
+}
+async function deliverInner(c: Conv, agent: string): Promise<string | null> {
   const unseenOf = () => c.messages.filter((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent);
   if (!unseenOf().length) return null;
   emit({ type: "typing", conv: c.id, agent, on: true });
@@ -158,8 +164,8 @@ function kick(c: Conv, agent: string) {
 const chains = new Map<string, Promise<unknown>>();
 function route(c: Conv, m: Msg) {
   if (m.from === "system") return;
-  if (c.kind === "dm") return void (m.from === "user" && kick(c, c.members[0]));
-  const fromAgent = m.from !== "user";
+  if (c.kind === "dm") return void (!agents[m.from] && kick(c, c.members[0])); // any human/external sender triggers the agent
+  const fromAgent = !!agents[m.from];
   const mentioned = c.members.filter((n) => new RegExp(`@${n}\\b`).test(m.text));
   const targets = (mentioned.length ? mentioned : c.members).filter((n) => n !== m.from);
   if (c.mode === "sequential") { // legacy: user message, agents answer one after another
@@ -168,8 +174,8 @@ function route(c: Conv, m: Msg) {
     return void chains.set(c.id, (chains.get(c.id) ?? Promise.resolve()).then(run, run));
   }
   if (fromAgent) { // budget: agent messages since the user last spoke, in total and for this author
-    const lastUser = c.messages.findLastIndex((x) => x.from === "user");
-    const since = c.messages.slice(lastUser + 1).filter((x) => x.from !== "user" && x.from !== "system");
+    const lastUser = c.messages.findLastIndex((x) => !agents[x.from] && x.from !== "system");
+    const since = c.messages.slice(lastUser + 1).filter((x) => agents[x.from]);
     if (since.length >= PER_AGENT * c.members.length || since.filter((x) => x.from === m.from).length >= PER_AGENT) return; // they still see it next time they run
   }
   targets.forEach((a) => kick(c, a));
@@ -287,4 +293,11 @@ createServer(async (req, res) => {
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e instanceof Error ? e.message : e) }); }
-}).listen(Number(process.env.PORT ?? 8080), () => console.log("orcie server up on :8080"));
+}).listen(Number(process.env.PORT ?? 8080), process.env.ORCIE_HOST ?? "127.0.0.1", () => console.log(`orcie server up on ${process.env.ORCIE_HOST ?? "127.0.0.1"}:${process.env.PORT ?? 8080}`));
+
+// Private token-authenticated API for a trusted remote client over Tailscale (docs/PRIVATE_API.md).
+startPrivateApi({
+  agents, convs, post, route,
+  busy: (id) => (active.get(id) ?? 0) > 0 || [...running].some((k) => k.startsWith(id + "|")),
+  authMode: () => (readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none"),
+});
