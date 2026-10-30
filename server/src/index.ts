@@ -87,6 +87,7 @@ function createAgent(name: string, model: string, profile?: Profile) {
   agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(profile ? { profile } : {}) };
   db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
+  if (!existsSync(`${GIT_DIR}/token`)) post(dm, "system", `${name} has no GitHub access: the shared credential is missing. Run scripts/export-git-login.sh, then \`cli/orcie recreate ${name}\`.`);
   if (profile) post(dm, "system", `${name} was onboarded as ${profile.role}: ${profile.skills.length} skill${profile.skills.length === 1 ? "" : "s"}, ${profile.tools.browser ? "browser enabled" : "no browser"}, ${profile.resources} resources.`);
   emit({ type: "state" });
   return agents[name];
@@ -341,6 +342,16 @@ createServer(async (req, res) => {
     // CLI + in-container tools (orcie-dm)
     if ((m = url.match(/^\/api\/agents\/([^/]+)\/recreate$/)) && req.method === "POST") { if (isExternal(m[1])) return json(400, { error: "external agents have no container" }); return json(200, recreateAgent(m[1])); }
     if (req.method === "POST" && url === "/agents/external") return json(201, createExternalAgent(b.name));
+    if (req.method === "GET" && url === "/api/git") { // does every container agent have the shared GitHub credential? (?verify=1 also calls GitHub from inside each container)
+      const verify = new URL(req.url!, "http://x").searchParams.get("verify") === "1", token = existsSync(`${GIT_DIR}/token`);
+      const rows = Object.values(agents).filter((a) => a.kind !== "external").map((a) => {
+        let mounted = false, user: string | null = null;
+        try { mounted = docker("inspect", "-f", "{{range .Mounts}}{{.Destination}} {{end}}", a.container).split(" ").includes("/gitcreds"); } catch { /* container missing */ }
+        if (verify && mounted) { try { user = docker("exec", a.container, "gh", "api", "user", "--jq", ".login"); } catch { /* no access */ } }
+        return { name: a.name, mounted, ...(verify ? { githubUser: user, ok: !!user } : {}) };
+      });
+      return json(200, { tokenFile: token, agents: rows, external: Object.values(agents).filter((a) => a.kind === "external").map((a) => a.name) });
+    }
     if (req.method === "GET" && url === "/api/auth") return json(200, { mode: readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none" });
     if (req.method === "GET" && url === "/agents") return json(200, Object.values(agents));
     if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5", b.profile ? clean(b.profile) : undefined));

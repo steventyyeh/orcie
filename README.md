@@ -33,3 +33,6 @@ Preferred: `claude setup-token`, then `scripts/setup-token.sh` stores a long-liv
 
 ## Private API (remote assistant over Tailscale)
 A token-authenticated API for one trusted remote client lives on a separate listener bound only to a Tailscale (or loopback) address. See [docs/PRIVATE_API.md](docs/PRIVATE_API.md). The UI server now binds to `127.0.0.1` by default (`ORCIE_HOST` to change).
+
+## GitHub access for every agent
+All container agents share one credential: `scripts/export-git-login.sh [username]` copies a `gh` token to `~/.orcie/git/token`, mounted read-only into every container and read at use time (update the file once and all agents pick it up). git uses it over HTTPS (SSH-style `git@github.com:` URLs are rewritten) and `gh` is authenticated; commits are attributed to `<agent> (orcie agent)`. Every newly hired agent gets it automatically. `cli/orcie doctor` verifies every agent can reach GitHub from inside its container; `GET /api/git?verify=1` returns the same. Agents hired while the token file is missing get a warning in their DM. External agents such as Muse have no container and are deliberately not given the token.
