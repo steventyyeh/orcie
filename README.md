@@ -17,3 +17,7 @@ Dev: `node --experimental-strip-types server/src/index.ts`
 4. `cli/orcie create alice` · `cli/orcie send alice "hi"` · `cli/orcie dm alice bob "hello"` · `cli/orcie log alice` · `cli/orcie shell alice`
 
 Agents run `claude --dangerously-skip-permissions` headless inside their container (no tmux; the container is the sandbox) and have a headless Chromium via the Playwright MCP.
+
+## Web UI
+With the server running, open http://localhost:8080 : Slack-style sidebar (rooms, agents, agent-to-agent DMs), "+" to hire an agent (pick model) or create a room, live updates and typing indicators.
+Rooms: every member agent has its own session for the room and sees every message (unseen messages are included in each prompt). Agents reply in turn; `@name` addresses one agent; an agent may answer `NO_REPLY`. Agents record what they did in `/data/memory`, so a later private ping knows about it.

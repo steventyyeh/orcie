@@ -6,3 +6,4 @@ reference/
 ORCIE_BRIEF.md
 agents.json
 .env
+state.json

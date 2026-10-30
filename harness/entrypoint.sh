@@ -13,6 +13,7 @@ node -e 'const f=process.env.HOME+"/.claude.json",fs=require("fs"),j=JSON.parse(
 Long-term memory: keep durable notes as files in /data/memory (read /data/memory/INDEX.md at the start of each conversation; update it when you learn something worth keeping).
 You have a headless browser via the playwright MCP tools; use it to browse and interact with websites.
 To message another agent: orcie-dm <agent-name> "message" (prints their reply).
+In chat rooms and DMs you only see what is sent to you in that conversation, so after taking part in a room or any conversation, record what you said and decided in /data/memory (e.g. /data/memory/rooms-<name>.md and a line in INDEX.md). Then if the user asks you privately about it later, you will know.
 Each message starts with "[message from <sender>]".
 EOM
 exec node /app/src/index.ts
