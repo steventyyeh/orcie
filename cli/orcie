@@ -12,9 +12,11 @@ case "$1" in
   shell) docker exec -it "orcie-$2" bash ;;
   search) curl -s "$S/api/search?q=$(node -e 'console.log(encodeURIComponent(process.argv[1]))' "$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).results.forEach(r=>console.log(`${r.title} #${r.seq} ${r.from}: ${r.snippet.replace(/\[\[|\]\]/g,"*").replace(/\n/g," ")}`)))' ;;
   doctor) curl -s "$S/api/git?verify=1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log("git token file:",j.tokenFile?"present":"MISSING");let bad=0;j.agents.forEach(a=>{const ok=a.ok;if(!ok)bad++;console.log(`  ${a.name.padEnd(10)} mounted=${a.mounted} github=${a.githubUser||"NO ACCESS"}${ok?"":"   <- run: orcie recreate "+a.name}`)});(j.external||[]).forEach(n=>console.log(`  ${n.padEnd(10)} external agent (no container, not given the token)`));process.exit(bad?1:0)})' ;;
+  link-tmux) j -X POST "$S/agents/tmux" -d "$(enc name="$2" session="$3")" ;;
+  tmux-sessions) j "$S/api/tmux" ;;
   add-external) j -X POST "$S/agents/external" -d "$(enc name="$2")" ;;
   recreate) j -X POST "$S/api/agents/$2/recreate" ;;
   recreate-all) for a in $(curl -s "$S/agents" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).forEach(a=>console.log(a.name)))'); do echo -n "$a: "; j -X POST "$S/api/agents/$a/recreate" | head -c 80; echo; done ;;
   rm) j -X DELETE "$S/agents/$2" ;;
-  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | log <agent> | shell <agent> | search <text> | doctor | add-external <name> | recreate <agent> | recreate-all | rm <agent>"; exit 1 ;;
+  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | log <agent> | shell <agent> | search <text> | doctor | add-external <name> | link-tmux <name> <session> | tmux-sessions | recreate <agent> | recreate-all | rm <agent>"; exit 1 ;;
 esac

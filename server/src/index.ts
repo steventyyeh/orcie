@@ -10,13 +10,14 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 // Router rule (docs/DESIGN.md §6): a conversation's messages reach every agent member's session for that conversation.
 type Skill = { name: string; description: string; instructions: string };
 type Profile = { role: string; summary: string; systemPrompt: string; tools: { browser: boolean }; skills: Skill[]; memorySeed: string; resources: keyof typeof PRESETS; greeting?: string };
-type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; kind?: "claude" | "external"; lastSeen?: string; lastReply?: string };
+type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; kind?: "claude" | "external" | "tmux"; lastSeen?: string; lastReply?: string };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
 type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number };
 type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential" };
 
 // Orcie is subscription-only (Claude CLI login). Anthropic API credentials are never used: drop them so nothing inherits them.
 for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.env[k];
+import * as tmuxBridge from "./tmux-bridge.ts";
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
 const CREDS = process.env.ORCIE_CREDS ?? `${process.env.HOME}/.orcie/creds`;
@@ -117,8 +118,9 @@ const ONLINE_MS = 90_000;
 const pending = new Map<string, Set<string>>(); // external agent -> conversations with messages waiting for it
 for (const r of db.loadPending()) (pending.get(r.agent) ?? pending.set(r.agent, new Set()).get(r.agent)!).add(r.conv);
 const isExternal = (n: string) => agents[n]?.kind === "external";
+const isTmux = (n: string) => agents[n]?.kind === "tmux"; // existing Claude Code session on the host (container field holds the tmux session name)
 const online = (a: Agent) => !!a.lastSeen && Date.now() - Date.parse(a.lastSeen) < ONLINE_MS;
-const agentView = (a: Agent) => ({ name: a.name, model: a.model, kind: a.kind ?? "claude", profile: a.profile, ...(a.kind === "external" ? { online: online(a), lastSeen: a.lastSeen ?? null, lastReply: a.lastReply ?? null, waiting: pending.get(a.name)?.size ?? 0 } : {}) });
+const agentView = (a: Agent) => ({ name: a.name, model: a.model, kind: a.kind ?? "claude", profile: a.profile, ...(a.kind === "tmux" ? { online: tmuxBridge.sessionAlive(a.container), session: a.container, lastReply: a.lastReply ?? null } : {}), ...(a.kind === "external" ? { online: online(a), lastSeen: a.lastSeen ?? null, lastReply: a.lastReply ?? null, waiting: pending.get(a.name)?.size ?? 0 } : {}) });
 function touchExternal(name: string) { const a = agents[name]; if (!a) return; const was = online(a); a.lastSeen = new Date().toISOString(); db.putAgent(a); if (!was) emit({ type: "state" }); }
 const clearPending = (agent: string, conv: string) => { if (pending.get(agent)?.delete(conv)) { db.delPending(agent, conv); emit({ type: "state" }); } };
 function enqueueExternal(c: Conv, agent: string): string | null {
@@ -168,9 +170,39 @@ function createExternalAgent(name: string) {
   emit({ type: "state" }); return agentView(agents[name]);
 }
 
+function createTmuxAgent(name: string, session: string) {
+  if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
+  if (agents[name]) throw new Error(`agent ${name} exists`);
+  tmuxBridge.checkLinkable(session);
+  if (Object.values(agents).some((a) => a.kind === "tmux" && a.container === session)) throw new Error(`session ${session} is already linked`);
+  agents[name] = { name, model: "host-tmux", container: session, port: 0, created: new Date().toISOString(), kind: "tmux" }; db.putAgent(agents[name]);
+  const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
+  post(dm, "system", `${name} is linked to the tmux session "${session}" on the host. Messages are typed into that session and its reply is read back from the screen, so replies can be late or rough. It runs on the Mac as you, outside any container.`);
+  emit({ type: "state" }); return agentView(agents[name]);
+}
+async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
+  const unseen = c.messages.filter((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent && m.from !== "system");
+  if (!unseen.length) return null;
+  const upto = c.messages.at(-1)!.seq, hop = Math.max(...unseen.map((m) => m.hop ?? 0)) + 1;
+  emit({ type: "typing", conv: c.id, agent, on: true });
+  try {
+    let text = fmtMsgs(unseen);
+    if (c.kind === "room") text = `(Orcie chat room "${c.title}", members: user, ${c.members.join(", ")}. Reply as a normal chat message, or exactly NO_REPLY if you have nothing to add.)\n${text}`;
+    else if (c.id.includes("+")) text += "\n\n(If this needs no response, reply exactly NO_REPLY.)";
+    const reply = (await tmuxBridge.turn({ session: agents[agent].container, from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conv: c.id })).trim();
+    c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
+    if (reply && !/^NO_REPLY\b/.test(reply)) { const m = post(c, agent, reply, [], hop); agents[agent].lastReply = m.at; db.putAgent(agents[agent]); route(c, m); }
+    return reply;
+  } catch (e) {
+    c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
+    post(c, "system", `${agent} failed: ${String(e).slice(0, 300)}`); return null;
+  } finally { emit({ type: "typing", conv: c.id, agent, on: false }); }
+}
+
 const active = new Map<string, number>(); // in-flight turns per conversation (for the private API's wait)
 async function deliver(c: Conv, agent: string): Promise<string | null> {
   if (isExternal(agent)) return enqueueExternal(c, agent);
+  if (isTmux(agent)) return deliverTmux(c, agent);
   active.set(c.id, (active.get(c.id) ?? 0) + 1);
   try { return await deliverInner(c, agent); } finally { active.set(c.id, (active.get(c.id) ?? 1) - 1); }
 }
@@ -342,11 +374,13 @@ createServer(async (req, res) => {
     }
 
     // CLI + in-container tools (orcie-dm)
-    if ((m = url.match(/^\/api\/agents\/([^/]+)\/recreate$/)) && req.method === "POST") { if (isExternal(m[1])) return json(400, { error: "external agents have no container" }); return json(200, recreateAgent(m[1])); }
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/recreate$/)) && req.method === "POST") { if (isExternal(m[1]) || isTmux(m[1])) return json(400, { error: "this agent has no container" }); return json(200, recreateAgent(m[1])); }
+    if (req.method === "GET" && url === "/api/tmux") return json(200, { sessions: tmuxBridge.listSessions(), linked: Object.values(agents).filter((a) => a.kind === "tmux").map((a) => ({ agent: a.name, session: a.container })) });
+    if (req.method === "POST" && url === "/agents/tmux") return json(201, createTmuxAgent(b.name, b.session));
     if (req.method === "POST" && url === "/agents/external") return json(201, createExternalAgent(b.name));
     if (req.method === "GET" && url === "/api/git") { // does every container agent have the shared GitHub credential? (?verify=1 also calls GitHub from inside each container)
       const verify = new URL(req.url!, "http://x").searchParams.get("verify") === "1", token = existsSync(`${GIT_DIR}/token`);
-      const rows = Object.values(agents).filter((a) => a.kind !== "external").map((a) => {
+      const rows = Object.values(agents).filter((a) => a.kind !== "external" && a.kind !== "tmux").map((a) => {
         let mounted = false, user: string | null = null;
         try { mounted = docker("inspect", "-f", "{{range .Mounts}}{{.Destination}} {{end}}", a.container).split(" ").includes("/gitcreds"); } catch { /* container missing */ }
         if (verify && mounted) { try { user = docker("exec", a.container, "gh", "api", "user", "--jq", ".login"); } catch { /* no access */ } }
@@ -370,7 +404,7 @@ createServer(async (req, res) => {
     if ((m = url.match(/^\/agents\/([^/]+)\/log$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/log"));
     if ((m = url.match(/^\/agents\/([^/]+)\/health$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/healthz"));
     if (req.method === "DELETE" && (m = url.match(/^\/agents\/([^/]+)$/)) && agents[m[1]]) {
-      if (!isExternal(m[1])) docker("rm", "-f", agents[m[1]].container); pending.delete(m[1]); db.delAgent(m[1]); delete agents[m[1]]; emit({ type: "state" }); return json(200, { deleted: m[1] });
+      if (!isExternal(m[1]) && !isTmux(m[1])) docker("rm", "-f", agents[m[1]].container); pending.delete(m[1]); db.delAgent(m[1]); delete agents[m[1]]; emit({ type: "state" }); return json(200, { deleted: m[1] });
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e instanceof Error ? e.message : e) }); }

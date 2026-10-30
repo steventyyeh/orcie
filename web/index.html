@@ -367,7 +367,7 @@ function section(id, title, addTitle, onAdd, items) {
   const list = el.querySelector(".list");
   items.forEach((i) => {
     const d = document.createElement("div"); d.className = "item" + (i.id === cur ? " on" : "") + (i.badge ? " unread" : "") + (i.busy ? " busy" : "");
-    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span>` + (i.tag ? `<span class="tag" title="External agent: bridged through the private API, no container">${i.tag}</span>` : "") + (i.busy ? '<span class="livedot" title="Working"></span>' : "") + (drafts[i.id] && i.id !== cur ? `<span class="draftmark" title="Unsent draft">${ic("pencil")}</span>` : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
+    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span>` + (i.tag ? `<span class="tag" title="${i.tag === "mac" ? "Existing tmux session on the Mac, no container" : "External agent: bridged through the private API, no container"}">${i.tag}</span>` : "") + (i.busy ? '<span class="livedot" title="Working"></span>' : "") + (drafts[i.id] && i.id !== cur ? `<span class="draftmark" title="Unsent draft">${ic("pencil")}</span>` : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
     d.onclick = () => open(i.id); list.append(d);
   });
   if (!items.length) { const e = document.createElement("div"); e.className = "item none"; e.textContent = "Nothing here yet"; list.append(e); }
@@ -383,7 +383,7 @@ function drawNav() {
     section("agents", "Agents", "Hire an agent", openWizard, state.agents.map((a) => {
       const c = convs.find((x) => x.id === "dm:" + a.name) || { id: "dm:" + a.name };
       return { id: c.id, text: a.name, badge: unread(c), busy: busy.has(a.name),
-        icon: `<span class="ico"><span class="av sm" style="--h:${hue(a.name)}">${a.name[0].toUpperCase()}<span class="pres ${a.kind === "external" && !a.online ? "off" : ""}"></span></span></span>`, tag: a.kind === "external" ? "ext" : "" }; })),
+        icon: `<span class="ico"><span class="av sm" style="--h:${hue(a.name)}">${a.name[0].toUpperCase()}<span class="pres ${(a.kind === "external" || a.kind === "tmux") && !a.online ? "off" : ""}"></span></span></span>`, tag: a.kind === "external" ? "ext" : a.kind === "tmux" ? "mac" : "" }; })),
     section("aadm", "Agent DMs", "", null, convs.filter((c) => c.id.includes("+")).map((c) => ({ id: c.id, text: pairTitle(c.title), icon: `<span class="ico">${pairAv(c.title)}</span>`, badge: unread(c), soft: true }))),
   );
   nav.scrollTop = scroll;
@@ -401,7 +401,7 @@ function drawHeader() {
   const working = members.filter((m) => typing[cur]?.[m]);
   const agent = state.agents.find((a) => a.name === members[0]);
   const ago = (iso) => { const s = (Date.now() - Date.parse(iso)) / 1000; return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
-  const ext = agent?.kind === "external" ? ["External agent", agent.online ? "online" : agent.lastSeen ? `offline, last seen ${ago(agent.lastSeen)}` : "offline", agent.lastReply ? `last reply ${ago(agent.lastReply)}` : "no reply yet", agent.waiting ? `${agent.waiting} waiting` : ""].filter(Boolean).join(", ") : "";
+  const ext = agent?.kind === "tmux" ? [`Mac tmux session ${agent.session}`, agent.online ? "running" : "session not running", agent.lastReply ? `last reply ${ago(agent.lastReply)}` : "no reply yet"].join(", ") : agent?.kind === "external" ? ["External agent", agent.online ? "online" : agent.lastSeen ? `offline, last seen ${ago(agent.lastSeen)}` : "offline", agent.lastReply ? `last reply ${ago(agent.lastReply)}` : "no reply yet", agent.waiting ? `${agent.waiting} waiting` : ""].filter(Boolean).join(", ") : "";
   const sub = ext ? ext : working.length ? `${working.join(", ")} working`
     : room ? "" : ro ? "Read-only" : ["Active", agent?.profile?.role, agent?.model.replace("claude-", "")].filter(Boolean).join(", ");
   h.style.setProperty("--h", hue(room ? conv.title : members[0]));

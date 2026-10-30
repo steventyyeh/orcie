@@ -182,4 +182,4 @@ Every agent also has a headless Chromium through the Playwright MCP.
 
 Phases: P1 containerize an agent (done in the POC); P2 server and HR create the containers (POC); P3 DMs and rooms through the Router; P4 long-term memory across sessions and a summarizer; P5 retire the host watcher.
 
-Open: how host tmux agents and containerized agents coexist during migration (a bridge agent type wrapping a host session)?
+Host tmux sessions coexist with containers through a `tmux` agent kind (server/src/tmux-bridge.ts): explicitly linked sessions, used where macOS tools such as Xcode are required.
