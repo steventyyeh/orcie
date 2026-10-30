@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 // Router rule (docs/DESIGN.md §6): a conversation's messages reach every agent member's session for that conversation.
 type Agent = { name: string; model: string; container: string; port: number; created: string };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
-type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[] };
+type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number };
 type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential" };
 
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
@@ -62,8 +62,8 @@ function createAgent(name: string, model: string) {
 function ensureConv(id: string, kind: Conv["kind"], title: string, members: string[]) {
   return (convs[id] ??= { id, kind, title, members, messages: [], cursor: {} });
 }
-function post(c: Conv, from: string, text: string, activity?: Item[]) {
-  const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}) };
+function post(c: Conv, from: string, text: string, activity?: Item[], hop?: number) {
+  const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}), ...(hop !== undefined ? { hop } : {}) };
   c.messages.push(m); saveConvs(); emit({ type: "message", conv: c.id, msg: m });
   return m;
 }
@@ -73,9 +73,10 @@ async function deliver(c: Conv, agent: string): Promise<string | null> {
   const unseen = c.messages.filter((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent);
   if (!unseen.length) return null;
   const upto = c.messages.at(-1)!.seq;
+  const hop = Math.max(...unseen.map((m) => m.hop ?? 0)) + 1; // how many agent-to-agent steps deep this reply is
   const transcript = unseen.map((m) => `[${m.from}] ${m.text}`).join("\n");
   const text = c.kind === "room"
-    ? `You are in the chat room "${c.title}" (members: user, ${c.members.join(", ")}). Messages you haven't seen:\n${transcript}\n\nYour reply is posted to the whole room. If you have nothing useful to add, reply exactly NO_REPLY.`
+    ? `You are in the chat room "${c.title}" (members: user, ${c.members.join(", ")}). Messages you haven't seen:\n${transcript}\n\nOther members are replying at the same time as you, and their messages show up here as context. Your reply is posted to the whole room. Reply only if you have something new to add; do not reply just to agree or acknowledge. Otherwise reply exactly NO_REPLY.`
     : transcript;
   emit({ type: "typing", conv: c.id, agent, on: true });
   const items: Item[] = [];
@@ -85,7 +86,7 @@ async function deliver(c: Conv, agent: string): Promise<string | null> {
       else if (e.kind === "tool_result") { const it = items.find((x) => x.id === e.id); if (it) { it.result = e.preview; it.ok = e.ok; emit({ type: "activity", conv: c.id, agent, update: { id: e.id, result: e.preview, ok: e.ok } }); } }
     })).trim();
     c.cursor[agent] = upto;
-    if (reply && reply !== "NO_REPLY") post(c, agent, reply, items);
+    if (reply && reply !== "NO_REPLY") route(c, post(c, agent, reply, items, hop));
     return reply;
   } catch (e) {
     post(c, "system", `${agent} failed: ${String(e).slice(0, 300)}`);
@@ -93,17 +94,32 @@ async function deliver(c: Conv, agent: string): Promise<string | null> {
   } finally { emit({ type: "typing", conv: c.id, agent, on: false }); }
 }
 
-// Room fan-out: "parallel" (default) runs all addressed agents at once; "sequential" runs them in turn so each sees
-// earlier replies. Rounds are serialized per conversation either way.
+// ---- routing ----
+// Every posted message is delivered to every other member's session at the same moment. Each (conversation, agent)
+// has its own serial worker: if the agent is mid-turn, new messages are batched into its next turn (cursor-based),
+// so agents never wait on each other. Agent-to-agent chatter is capped at MAX_HOPS to prevent endless loops.
+const MAX_HOPS = 3;
+const running = new Set<string>(), dirty = new Set<string>();
+function kick(c: Conv, agent: string) {
+  const k = `${c.id}|${agent}`;
+  if (running.has(k)) return void dirty.add(k);
+  running.add(k);
+  (async () => { do { dirty.delete(k); await deliver(c, agent); } while (dirty.has(k)); })().finally(() => running.delete(k));
+}
 const chains = new Map<string, Promise<unknown>>();
-function trigger(c: Conv, text: string) {
-  const mentioned = c.members.filter((n) => new RegExp(`@${n}\\b`).test(text));
-  const targets = c.kind === "dm" ? c.members : mentioned.length ? mentioned : c.members;
-  const run = async () => {
-    if (c.mode === "sequential") for (const a of targets) await deliver(c, a);
-    else await Promise.all(targets.map((a) => deliver(c, a)));
-  };
-  chains.set(c.id, (chains.get(c.id) ?? Promise.resolve()).then(run, run));
+function route(c: Conv, m: Msg) {
+  if (m.from === "system") return;
+  if (c.kind === "dm") return void (m.from === "user" && kick(c, c.members[0]));
+  const fromAgent = m.from !== "user";
+  const mentioned = c.members.filter((n) => new RegExp(`@${n}\\b`).test(m.text));
+  const targets = (mentioned.length ? mentioned : c.members).filter((n) => n !== m.from);
+  if (c.mode === "sequential") { // legacy: user message, agents answer one after another
+    if (fromAgent) return;
+    const run = async () => { for (const a of targets) await deliver(c, a); };
+    return void chains.set(c.id, (chains.get(c.id) ?? Promise.resolve()).then(run, run));
+  }
+  if (fromAgent && (m.hop ?? 0) >= MAX_HOPS) return; // stop agent-to-agent chains; they still see it next time they run
+  targets.forEach((a) => kick(c, a));
 }
 
 // ---- HTTP ----
@@ -133,7 +149,7 @@ createServer(async (req, res) => {
     if ((m = url.match(/^\/api\/conversations\/([^/]+)\/messages$/)) && req.method === "POST") {
       const c = convs[decodeURIComponent(m[1])]; if (!c) return json(404, { error: "no such conversation" });
       if (c.kind === "dm" && !c.members.includes("user") && c.id.includes("+")) return json(400, { error: "agent-to-agent DMs are read-only" });
-      const msg = post(c, "user", String(b.text ?? "")); trigger(c, msg.text); return json(202, msg);
+      const msg = post(c, "user", String(b.text ?? ""), undefined, 0); route(c, msg); return json(202, msg);
     }
     if (req.method === "POST" && url === "/api/rooms") {
       const members: string[] = (b.members ?? []).filter((n: string) => agents[n]);
