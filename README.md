@@ -27,3 +27,6 @@ Rooms: every member agent has its own session for the room and sees every messag
 
 ## Storage (on-prem)
 Conversations live in a local SQLite file, `orcie.db` (override with `ORCIE_DB`): agents, conversations, members, messages (with tool activity), per-agent delivery cursors, and an FTS5 full-text index. Nothing leaves the machine. Search from the UI (sidebar box or Cmd/Ctrl+K), the API (`GET /api/search?q=`), or `cli/orcie search <text>`. Earlier `state.json`/`agents.json` files are imported once on first start and renamed `*.migrated`. Each agent's private state (Claude sessions, memory notes, turn log) stays in its own container volume.
+
+## Auth for agent containers (subscription, never an API key)
+Preferred: `claude setup-token`, then `scripts/setup-token.sh` stores a long-lived token in `~/.orcie/token`. Containers get it as `CLAUDE_CODE_OAUTH_TOKEN`; it does not rotate, so there are no refresh conflicts. Fallback: `scripts/export-login.sh` copies your host login into `~/.orcie/creds`; this copy can go stale when the host or a container refreshes the shared refresh token ("OAuth session expired and could not be refreshed"). After changing auth, run `cli/orcie recreate-all` (new container, same volume: memory and sessions are kept). `GET /api/auth` shows which mode is active.

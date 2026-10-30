@@ -54,18 +54,33 @@ const clients = new Set<ServerResponse>();
 const emit = (e: unknown) => clients.forEach((c) => c.write(`data: ${JSON.stringify(e)}\n\n`));
 
 // ---- agents (HR) ----
-function createAgent(name: string, model: string, profile?: Profile) {
-  if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
-  if (!existsSync(`${CREDS}/.credentials.json`)) throw new Error(`no subscription login at ${CREDS}; run scripts/export-login.sh`);
-  if (agents[name]) throw new Error(`agent ${name} exists`);
-  const container = `orcie-${name}`;
-  // Subscription login mounted from a private dir. No API key is ever set.
-  const res = PRESETS[profile?.resources ?? "standard"] ?? PRESETS.standard;
-  docker("run", "-d", "--name", container, "--restart", "unless-stopped", "--cpus", res.cpus, "--memory", res.memory,
-    "-v", `orcie-${name}-data:/data`, "-v", `${CREDS}:/creds`, "-p", "127.0.0.1:0:9090",
+// Auth for agent containers (never an API key). Preferred: a long-lived subscription token from `claude setup-token`
+// stored in ~/.orcie/token (does not rotate, safe to share). Fallback: a copy of the host login (scripts/export-login.sh),
+// which can go stale when the host or another container refreshes the shared refresh token.
+const TOKEN_FILE = process.env.ORCIE_TOKEN_FILE ?? `${process.env.HOME}/.orcie/token`;
+const readToken = () => (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "");
+function runContainer(name: string, model: string, profile?: Profile) {
+  const token = readToken();
+  if (!token && !existsSync(`${CREDS}/.credentials.json`)) throw new Error(`no subscription auth: run \`claude setup-token\` and save it to ${TOKEN_FILE}, or run scripts/export-login.sh`);
+  const container = `orcie-${name}`, res = PRESETS[profile?.resources ?? "standard"] ?? PRESETS.standard;
+  execFileSync("docker", ["run", "-d", "--name", container, "--restart", "unless-stopped", "--cpus", res.cpus, "--memory", res.memory,
+    "-v", `orcie-${name}-data:/data`, ...(token ? ["-e", "CLAUDE_CODE_OAUTH_TOKEN"] : ["-v", `${CREDS}:/creds`]), "-p", "127.0.0.1:0:9090",
     "--add-host", "host.docker.internal:host-gateway",
     "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_MODEL=${model}`,
-    ...(profile ? ["-e", `ORCIE_PROFILE=${Buffer.from(JSON.stringify(profile)).toString("base64")}`] : []), IMAGE);
+    ...(profile ? ["-e", `ORCIE_PROFILE=${Buffer.from(JSON.stringify(profile)).toString("base64")}`] : []), IMAGE],
+    { encoding: "utf8", env: { ...process.env, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) } }); // token passed by env, not on the command line
+  return container;
+}
+function recreateAgent(name: string) { // new container on the same volume (memory, sessions, skills persist), e.g. after changing auth
+  const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
+  try { docker("rm", "-f", a.container); } catch { /* already gone */ }
+  a.container = runContainer(name, a.model, a.profile); a.port = hostPort(a.container);
+  return a;
+}
+function createAgent(name: string, model: string, profile?: Profile) {
+  if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
+  if (agents[name]) throw new Error(`agent ${name} exists`);
+  const container = runContainer(name, model, profile);
   agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(profile ? { profile } : {}) };
   db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
@@ -249,6 +264,8 @@ createServer(async (req, res) => {
     }
 
     // CLI + in-container tools (orcie-dm)
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/recreate$/)) && req.method === "POST") return json(200, recreateAgent(m[1]));
+    if (req.method === "GET" && url === "/api/auth") return json(200, { mode: readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none" });
     if (req.method === "GET" && url === "/agents") return json(200, Object.values(agents));
     if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5", b.profile ? clean(b.profile) : undefined));
     if (req.method === "POST" && url === "/dm") { // sync agent->agent (or user->agent) DM; returns the reply
