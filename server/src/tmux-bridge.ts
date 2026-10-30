@@ -2,7 +2,7 @@
 // Messages are typed into the pane; the reply is scraped from the pane once it goes idle. Only sessions that were
 // explicitly linked are ever touched, and the deny list keeps the manager/secretary sessions out.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
 const DENY = (process.env.ORCIE_TMUX_DENY ?? "orcie-commander,secretary,commander").split(",").map((s) => s.trim()).filter(Boolean);
 const DIR = process.env.ORCIE_TMUX_DIR ?? `${process.env.HOME}/.orcie/tmux`;
@@ -36,6 +36,28 @@ export function extractReply(text: string, marker: string): string {
   return s || lines.filter((l) => !chrome(l)).join("\n").trim().slice(-3000);
 }
 
+// The pane has no scrollback (full-screen UI), so long replies cannot be scraped. Claude Code also writes every turn to a
+// transcript (~/.claude/projects/<cwd>/<session>.jsonl); that is structured and complete, so it is the primary source.
+const PROJECTS = `${process.env.HOME}/.claude/projects`;
+const projectDir = (session: string) => { try { return `${PROJECTS}/${tmux("display", "-p", "-t", `=${session}:`, "#{pane_current_path}").trim().replace(/[^A-Za-z0-9]/g, "-")}`; } catch { return ""; } };
+const entryText = (j: any) => { const c = j?.message?.content; return typeof c === "string" ? c : Array.isArray(c) ? c.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n") : ""; };
+function fromTranscript(dir: string, marker: string): { text: string; done: boolean } | null {
+  if (!dir || !existsSync(dir)) return null;
+  const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => ({ f: `${dir}/${f}`, t: statSync(`${dir}/${f}`).mtimeMs })).sort((a, b) => b.t - a.t).slice(0, 4);
+  for (const { f } of files) {
+    let rows: any[]; try { rows = readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { continue; }
+    const at = rows.map((j, i) => (j.type === "user" && entryText(j).includes(marker) ? i : -1)).filter((i) => i >= 0).at(-1);
+    if (at === undefined) continue;
+    const after = rows.slice(at + 1).filter((j) => j.type === "assistant" || (j.type === "user" && Array.isArray(j.message?.content) && j.message.content.some((b: any) => b?.type === "tool_result")));
+    const lastResult = after.map((j, i) => (j.type === "user" ? i : -1)).filter((i) => i >= 0).at(-1) ?? -1;
+    const final = after.slice(lastResult + 1).filter((j) => j.type === "assistant");
+    const text = final.map(entryText).filter(Boolean).join("\n\n").trim();
+    const lastA = after.filter((j) => j.type === "assistant").at(-1);
+    return { text, done: !!lastA && lastA.message?.stop_reason === "end_turn" };
+  }
+  return null;
+}
+
 const locks = new Map<string, Promise<unknown>>();
 export type TmuxTurn = { session: string; from: string; text: string; conv: string; onStatus?: (s: string) => void };
 // Types one message into the pane and resolves with the reply text ("" if the session produced nothing).
@@ -53,17 +75,17 @@ export function turn(t: TmuxTurn): Promise<string> {
     }
     tmux("send-keys", "-t", `=${t.session}:`, "-l", body);
     await sleep(400); tmux("send-keys", "-t", `=${t.session}:`, "Enter");
-    // wait for the session to start working, then for it to go idle (unchanged and not busy for ~6s)
-    const start = Date.now(); let last = "", still = 0, sawBusy = false;
+    // wait for the reply to land in the transcript and the session to go idle; fall back to the screen if there is no transcript
+    const dir = projectDir(t.session), start = Date.now(); let last = "", still = 0, sawBusy = false;
     while (Date.now() - start < 15 * 60_000) {
       await sleep(1500);
       if (!sessionAlive(t.session)) throw new Error(`tmux session ${t.session} ended`);
       const p = pane(t.session);
-      if (busy(p)) { sawBusy = true; still = 0; t.onStatus?.("working"); }
-      else if (p === last) still++; else still = 0;
+      if (busy(p)) { sawBusy = true; still = 0; t.onStatus?.("working"); } else if (p === last) still++; else still = 0;
       last = p;
-      if (still >= 4 && (sawBusy || Date.now() - start > 20_000) && p.includes(marker)) return extractReply(p, marker);
-      if (!sawBusy && still >= 4 && Date.now() - start > 45_000) return extractReply(p, marker);
+      const tr = fromTranscript(dir, marker);
+      if (tr?.done && still >= 2) return tr.text || "";
+      if (!tr && still >= 4 && Date.now() - start > 60_000) return extractReply(p, marker); // no transcript found: best-effort screen scrape
     }
     throw new Error("timed out waiting for the tmux session to finish");
   };

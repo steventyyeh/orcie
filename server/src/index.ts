@@ -177,7 +177,7 @@ function createTmuxAgent(name: string, session: string) {
   if (Object.values(agents).some((a) => a.kind === "tmux" && a.container === session)) throw new Error(`session ${session} is already linked`);
   agents[name] = { name, model: "host-tmux", container: session, port: 0, created: new Date().toISOString(), kind: "tmux" }; db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
-  post(dm, "system", `${name} is linked to the tmux session "${session}" on the host. Messages are typed into that session and its reply is read back from the screen, so replies can be late or rough. It runs on the Mac as you, outside any container.`);
+  post(dm, "system", `${name} is linked to the tmux session "${session}" on the host. Messages are typed into that session and its reply is read back from its Claude transcript when it finishes. It runs on the Mac as you, outside any container.`);
   emit({ type: "state" }); return agentView(agents[name]);
 }
 async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
