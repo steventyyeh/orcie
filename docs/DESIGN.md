@@ -117,7 +117,7 @@ Single rule: **a conversation's messages are delivered to every agent member's s
 
 ## 7. Harness (agent process)
 
-- Small HTTP service (language: TypeScript/Node, matching the server).
+- Small HTTP service (TypeScript/Node, matching the server).
 - `POST /sessions/:id/messages` — enqueue message(s), run a turn via the Claude CLI (`claude -p --output-format stream-json --resume ...`), stream events back.
 - Tools exposed to the CLI (via MCP server hosted by the harness): `memory.read/write/search`, `dm(agent, text)`, `room.list`.
 - Per-session serial execution; cross-session concurrency capped by config.
@@ -166,23 +166,20 @@ Deliberate differences:
 
 ## 11. Upgrade path from the tmux setup
 
-Principle (from Muse): change one layer at a time. First fortify the runtime (tmux on host to container), then replace routing, then add memory and rooms.
+Decision (2026-10-29): **no tmux in orcie.** The core interaction is still the Claude CLI, but each agent is a dedicated, long-running Docker container (the Muse approach) whose harness runs the CLI headless: `claude -p --output-format json --resume <session> --dangerously-skip-permissions`, one turn per message, one resumable session per conversation. The container is the sandbox, so agents get all permissions inside it.
 
 | Today (tmux) | Orcie |
 |---|---|
-| tmux session per agent on the host | Docker container per agent; **tmux still runs inside the container** and hosts the interactive `claude` process |
-| `tmux attach -t agent` | `orcie attach <agent>` = `docker exec -it <container> tmux attach` |
-| `tmux capture-pane` for status | same, via `docker exec`, plus harness `/healthz` and heartbeat |
-| `tmux send-keys` to deliver messages | harness delivers to the in-container tmux pane (pointer to a message file, never a large paste) |
-| file inbox plus filename-prefix watcher | server Router (DB-backed); the watcher stays as an adapter so existing task files still route |
-| host home dir and shared credentials | per-agent volume, per-agent secrets, CPU/memory limits |
-| reboot loses sessions | `restart: unless-stopped`; the agent's tmux and Claude session are restored on container start |
-| roles like secretary / commander / workers | ordinary agents created via HR; roles are just system prompt plus membership |
+| tmux session per agent on the host | Docker container per agent; harness is the container's main process |
+| `tmux send-keys` / `capture-pane` | harness `POST /send` (prompt via stdin, no paste truncation) and `GET /log` |
+| attach to watch | `orcie log <agent>`, `orcie shell <agent>` |
+| file inbox plus filename-prefix watcher | server Router (DB-backed); the watcher can stay as an adapter during migration |
+| host home dir and shared credentials | per-agent volume, CPU/memory limits; subscription login mounted from `~/.orcie/creds` (no API key) |
+| reboot loses sessions | `restart: unless-stopped` plus a HEALTHCHECK; sessions, memory and logs live on the volume |
+| roles like secretary / commander / workers | ordinary agents created via HR; roles are system prompt plus membership |
 
-Consequence for the harness (§7): two delivery modes behind one interface.
-1. **tmux mode (MVP default)**: keep the interactive Claude CLI alive in an in-container tmux pane. This is a drop-in match for today's workflow, so attach/observe works unchanged.
-2. **headless mode (later)**: spawn `claude -p ... --resume` per turn for cleaner structured output.
+Every agent also has a headless Chromium through the Playwright MCP.
 
-Phases: P1 containerize one existing agent with tmux inside and the watcher unchanged; P2 server and HR create the containers; P3 DMs and rooms through the Router; P4 long-term memory and agent-to-agent DMs; P5 retire the host watcher.
+Phases: P1 containerize an agent (done in the POC); P2 server and HR create the containers (POC); P3 DMs and rooms through the Router; P4 long-term memory across sessions and a summarizer; P5 retire the host watcher.
 
-Open: how do existing host tmux agents and containerized agents coexist during migration (a bridge agent type that wraps a host tmux session)?
+Open: how host tmux agents and containerized agents coexist during migration (a bridge agent type wrapping a host session)?

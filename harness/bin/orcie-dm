@@ -2,6 +2,6 @@
 # Usage: orcie-dm <agent> "message"   (routes through the orcie server)
 [ $# -ge 2 ] || { echo "usage: orcie-dm <agent> <message>" >&2; exit 1; }
 to="$1"; shift
-curl -sf -X POST "${ORCIE_SERVER:-http://host.docker.internal:8080}/dm" \
+curl -s --max-time 900 -X POST "${ORCIE_SERVER:-http://host.docker.internal:8080}/dm" \
   -H 'content-type: application/json' \
-  -d "$(node -e 'console.log(JSON.stringify({from:process.argv[1],to:process.argv[2],text:process.argv[3]}))' "$AGENT_NAME" "$to" "$*")" && echo
+  -d "$(node -e 'console.log(JSON.stringify({from:process.argv[1],to:process.argv[2],text:process.argv[3]}))' "$AGENT_NAME" "$to" "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.reply??s)})'
