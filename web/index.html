@@ -28,7 +28,13 @@ header select,header button{font:inherit;padding:3px 8px}
 .body code{background:var(--card);padding:1px 4px;border-radius:4px}
 .body pre{background:var(--card);padding:8px;border-radius:6px;overflow:auto;white-space:pre}
 .sys{color:var(--sys);font-size:13px;text-align:center;margin:8px 0}
-#typing{height:22px;padding:0 20px;color:var(--mute);font-size:13px}
+#typing{padding:0 20px;color:var(--mute);font-size:13px;max-height:40vh;overflow:auto}
+details.act{margin:4px 0;color:var(--mute);font-size:13px}
+details.act summary{cursor:pointer;user-select:none}
+.tool{font-family:ui-monospace,Menlo,monospace;font-size:12px;margin:4px 0 4px 14px;padding:4px 8px;background:var(--card);border-radius:6px;color:var(--fg)}
+.tool .nm{font-weight:700;color:var(--accent)}.tool .in{white-space:pre-wrap;overflow-wrap:anywhere}
+.tool .res{color:var(--mute);white-space:pre-wrap;overflow-wrap:anywhere;margin-top:3px;max-height:120px;overflow:auto}.tool .res.bad{color:#d33}
+.tool.run .nm::after{content:" …"}
 form{padding:0 20px 18px;display:flex;gap:8px}
 textarea{flex:1;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);resize:none;height:48px}
 button.send{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
@@ -72,7 +78,7 @@ dialog .row{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
 
 <script>
 const $ = (id) => document.getElementById(id);
-let state = { agents: [], conversations: [] }, cur = null, conv = null, typing = {};
+let state = { agents: [], conversations: [] }, cur = null, conv = null, typing = {}, live = {}; // live[conv][agent] = tool items for the turn in progress
 const colors = ["#e01e5a","#2eb67d","#ecb22e","#36c5f0","#7c3aed","#e8912d","#0b7285","#a61e4d"];
 const color = (n) => n === "user" ? "#555" : colors[[...n].reduce((a, c) => a + c.charCodeAt(0), 0) % colors.length];
 const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -117,13 +123,29 @@ function addMsg(m) {
   const box = $("msgs"); if (box.querySelector(".empty")) box.innerHTML = "";
   const d = document.createElement("div");
   if (m.from === "system") { d.className = "sys"; d.textContent = m.text; }
-  else { d.className = "msg"; d.innerHTML = `<div class="av" style="background:${color(m.from)}">${esc(m.from[0].toUpperCase())}</div><div><span class="who">${esc(m.from)}</span><span class="when">${new Date(m.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><div class="body">${fmt(m.text)}</div></div>`; }
+  else { d.className = "msg"; d.innerHTML = `<div class="av" style="background:${color(m.from)}">${esc(m.from[0].toUpperCase())}</div><div><span class="who">${esc(m.from)}</span><span class="when">${new Date(m.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><div class="body">${fmt(m.text)}</div></div>`;
+    if (m.activity?.length) d.lastChild.append(actEl(m.activity, `used ${m.activity.length} tool${m.activity.length > 1 ? "s" : ""}`, false)); }
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   box.append(d); if (atBottom) box.scrollTop = box.scrollHeight;
 }
+function toolEl(it) {
+  const t = document.createElement("div"); t.className = "tool" + (it.result === undefined ? " run" : ""); t.dataset.id = it.id;
+  t.innerHTML = `<span class="nm">${esc(it.name)}</span> <span class="in">${esc(it.input)}</span>` + (it.result !== undefined ? `<div class="res${it.ok === false ? " bad" : ""}">${esc(it.result)}</div>` : "");
+  return t;
+}
+function actEl(items, label, open) {
+  const d = document.createElement("details"); d.className = "act"; d.open = open;
+  const s = document.createElement("summary"); s.textContent = label; d.append(s); items.forEach((it) => d.append(toolEl(it))); return d;
+}
 function drawTyping() {
-  const who = Object.keys(typing[cur] || {}).filter((a) => typing[cur][a]);
-  $("typing").textContent = who.length ? who.join(", ") + (who.length > 1 ? " are" : " is") + " thinking…" : "";
+  const box = $("typing"), open = {};
+  box.querySelectorAll("details[data-agent]").forEach((d) => (open[d.dataset.agent] = d.open));
+  box.innerHTML = "";
+  for (const a of Object.keys(typing[cur] || {}).filter((a) => typing[cur][a])) {
+    const items = live[cur]?.[a] || [];
+    const d = actEl(items, `${a} is thinking…` + (items.length ? ` (${items.length} tool${items.length > 1 ? "s" : ""} — click to expand)` : ""), open[a] ?? false);
+    d.dataset.agent = a; box.append(d);
+  }
 }
 
 $("form").onsubmit = async (e) => {
@@ -154,7 +176,13 @@ es.onmessage = (ev) => {
   const e = JSON.parse(ev.data);
   if (e.type === "state") refresh();
   if (e.type === "message") { if (e.conv === cur) { conv.messages.push(e.msg); addMsg(e.msg); } refresh(); }
-  if (e.type === "typing") { (typing[e.conv] ??= {})[e.agent] = e.on; if (e.conv === cur) drawTyping(); }
+  if (e.type === "typing") { (typing[e.conv] ??= {})[e.agent] = e.on; if (e.on) (live[e.conv] ??= {})[e.agent] = []; if (e.conv === cur) drawTyping(); }
+  if (e.type === "activity") {
+    const items = ((live[e.conv] ??= {})[e.agent] ??= []);
+    if (e.item) items.push(e.item);
+    else { const it = items.find((x) => x.id === e.update.id); if (it) Object.assign(it, e.update); }
+    if (e.conv === cur) drawTyping();
+  }
 };
 refresh();
 </script>

@@ -5,7 +5,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 // Control plane (POC): agents are Docker containers; conversations/rooms are persisted in a JSON file.
 // Router rule (docs/DESIGN.md §6): a conversation's messages reach every agent member's session for that conversation.
 type Agent = { name: string; model: string; container: string; port: number; created: string };
-type Msg = { seq: number; from: string; text: string; at: string };
+type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
+type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[] };
 type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number> };
 
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
@@ -21,6 +22,17 @@ const saveConvs = () => writeFileSync(STATE, JSON.stringify(convs, null, 2));
 
 const docker = (...a: string[]) => execFileSync("docker", a, { encoding: "utf8", env: process.env }).trim();
 const hostPort = (c: string) => Number(docker("port", c, "9090/tcp").split("\n")[0].split(":").pop()); // port changes on restart
+// Streams one turn from the agent's harness (NDJSON), reporting tool use via onEvent; resolves with the reply.
+async function turn(a: Agent, body: unknown, onEvent: (e: any) => void): Promise<string> {
+  const r = await fetch(`http://127.0.0.1:${hostPort(a.container)}/send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(900_000) });
+  const dec = new TextDecoder(); let buf = "", reply: string | null = null;
+  const line = (l: string) => { if (!l.trim()) return; const e = JSON.parse(l); if (e.kind === "done") reply = e.reply; else if (e.kind === "error") throw new Error(e.error); else onEvent(e); };
+  for await (const chunk of r.body as any) { buf += dec.decode(chunk, { stream: true }); let i; while ((i = buf.indexOf("\n")) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); } }
+  line(buf);
+  if (reply === null) throw new Error("agent stream ended without a reply");
+  return reply;
+}
+const summarize = (input: any) => { const v = input?.command ?? input?.file_path ?? input?.url ?? input?.pattern ?? input?.path ?? input?.prompt ?? JSON.stringify(input ?? {}); return String(v).slice(0, 300); };
 const harness = async (a: Agent, path: string, init?: RequestInit) =>
   (await fetch(`http://127.0.0.1:${hostPort(a.container)}${path}`, { ...init, signal: AbortSignal.timeout(900_000) })).json();
 
@@ -50,8 +62,8 @@ function createAgent(name: string, model: string) {
 function ensureConv(id: string, kind: Conv["kind"], title: string, members: string[]) {
   return (convs[id] ??= { id, kind, title, members, messages: [], cursor: {} });
 }
-function post(c: Conv, from: string, text: string) {
-  const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString() };
+function post(c: Conv, from: string, text: string, activity?: Item[]) {
+  const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}) };
   c.messages.push(m); saveConvs(); emit({ type: "message", conv: c.id, msg: m });
   return m;
 }
@@ -66,13 +78,14 @@ async function deliver(c: Conv, agent: string): Promise<string | null> {
     ? `You are in the chat room "${c.title}" (members: user, ${c.members.join(", ")}). Messages you haven't seen:\n${transcript}\n\nYour reply is posted to the whole room. If you have nothing useful to add, reply exactly NO_REPLY.`
     : transcript;
   emit({ type: "typing", conv: c.id, agent, on: true });
+  const items: Item[] = [];
   try {
-    const r = await harness(agents[agent], "/send", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conversation: c.id }) });
-    if (r.error) throw new Error(r.error);
+    const reply = (await turn(agents[agent], { from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conversation: c.id }, (e) => {
+      if (e.kind === "tool") { const item = { id: e.id, name: e.name, input: summarize(e.input) }; items.push(item); emit({ type: "activity", conv: c.id, agent, item }); }
+      else if (e.kind === "tool_result") { const it = items.find((x) => x.id === e.id); if (it) { it.result = e.preview; it.ok = e.ok; emit({ type: "activity", conv: c.id, agent, update: { id: e.id, result: e.preview, ok: e.ok } }); } }
+    })).trim();
     c.cursor[agent] = upto;
-    const reply = String(r.reply ?? "").trim();
-    if (reply && reply !== "NO_REPLY") post(c, agent, reply);
+    if (reply && reply !== "NO_REPLY") post(c, agent, reply, items);
     return reply;
   } catch (e) {
     post(c, "system", `${agent} failed: ${String(e).slice(0, 300)}`);
