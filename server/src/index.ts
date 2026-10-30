@@ -15,6 +15,8 @@ type Item = { id: string; name: string; input: string; result?: string; ok?: boo
 type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number };
 type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential" };
 
+// Orcie is subscription-only (Claude CLI login). Anthropic API credentials are never used: drop them so nothing inherits them.
+for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.env[k];
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
 const CREDS = process.env.ORCIE_CREDS ?? `${process.env.HOME}/.orcie/creds`;
@@ -271,7 +273,7 @@ Conversation so far:
 ${history.map((h) => `${h.role === "user" ? "MANAGER" : "HR"}: ${h.text}`).join("\n") || "(none yet: greet the manager briefly and ask your first question)"}`;
 function claudeOnce(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const p = spawn("claude", ["-p", "--output-format", "json", "--tools", "", "--model", "claude-sonnet-5-5"], { cwd: mkdtempSync(`${tmpdir()}/orcie-hr-`), env: { ...process.env, ANTHROPIC_API_KEY: "" } });
+    const p = spawn("claude", ["-p", "--output-format", "json", "--tools", "", "--model", "claude-sonnet-5-5"], { cwd: mkdtempSync(`${tmpdir()}/orcie-hr-`), env: process.env });
     let out = "", err = ""; p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
     p.on("error", reject); p.on("close", (code) => { try { resolve(JSON.parse(out).result ?? ""); } catch { reject(new Error(`claude exited ${code}: ${err || out}`.slice(0, 500))); } });
     p.stdin.end(prompt);

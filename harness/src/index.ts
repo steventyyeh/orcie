@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // Per-agent harness: runs the Claude CLI headless, one turn per message, one resumable session per conversation.
+// Subscription login only; never an Anthropic API key.
+for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.env[k];
 const MODEL = process.env.ORCIE_MODEL ?? "claude-sonnet-5-5";
 const SESSIONS = "/data/sessions.json"; // conversation id -> claude session id
 const LOG = "/data/logs/turns.jsonl";

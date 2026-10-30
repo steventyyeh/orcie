@@ -140,7 +140,7 @@ Milestones: M0 scaffold + design → M1 container manager + harness echo → M2 
 ## 9. Open questions
 
 1. **Muse delivery model**: Muse routes via file inbox plus watcher; orcie uses an HTTP harness API. Do we also keep an on-disk, auditable message log per agent (§10)?
-2. **Claude CLI auth in containers**: API key vs. mounted subscription login; what is acceptable for an open-source default?
+2. **Claude CLI auth in containers**: decided: subscription login only (mounted login or `claude setup-token`); Anthropic API keys are not supported and are stripped from the environment.
 3. **Room turn-taking**: is "all agents respond to everything" tolerable at scale, or do we need a moderator/arbiter?
 4. **Memory summarization**: which model, how often, and how do we prevent drift/bloat?
 5. **Workspace sharing**: should agents in a room share a filesystem, or exchange artifacts only through messages?
@@ -174,7 +174,7 @@ Decision (2026-10-29): **no tmux in orcie.** The core interaction is still the C
 | `tmux send-keys` / `capture-pane` | harness `POST /send` (prompt via stdin, no paste truncation) and `GET /log` |
 | attach to watch | `orcie log <agent>`, `orcie shell <agent>` |
 | file inbox plus filename-prefix watcher | server Router (DB-backed); the watcher can stay as an adapter during migration |
-| host home dir and shared credentials | per-agent volume, CPU/memory limits; subscription login mounted from `~/.orcie/creds` (no API key) |
+| host home dir and shared credentials | per-agent volume, CPU/memory limits; subscription login mounted from `~/.orcie/creds` (subscription only) |
 | reboot loses sessions | `restart: unless-stopped` plus a HEALTHCHECK; sessions, memory and logs live on the volume |
 | roles like secretary / commander / workers | ordinary agents created via HR; roles are system prompt plus membership |
 
