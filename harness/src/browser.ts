@@ -15,6 +15,26 @@ export const control: Control = { holder: "agent", since: Date.now(), reason: nu
 const waiters: (() => void)[] = [];
 const settle = () => { if (control.holder === "agent" && !control.pending) while (waiters.length) waiters.shift()!(); };
 
+// ---- session tracking: is the agent using the browser right now? (Orca: /browser/active) ----
+// Active while: the agent sent a page command in the last 60 s, the human holds control, or a help request is pending.
+// Pure connection setup (enable/auto-attach/discovery) does not count, so a turn that never touches the browser is not "browsing".
+const ACTIVE_WINDOW_MS = 60_000;
+export const session = { id: 0, since: 0, lastCmd: 0, clients: 0 };
+const log: { at: number; method: string }[] = [];
+const isSetup = (m: string) => /\.(enable|disable)$/.test(m) || /^(Target\.(setAutoAttach|setDiscoverTargets|getBrowserContexts|getTargets|getTargetInfo|attachToTarget|detachFromTarget|attachToBrowserTarget)|Browser\.(getVersion|setDownloadBehavior)|Runtime\.(runIfWaitingForDebugger|addBinding)|Page\.(setLifecycleEventsEnabled|addScriptToEvaluateOnNewDocument|getFrameTree|createIsolatedWorld)|Emulation\.|Network\.(setCacheDisabled|setExtraHTTPHeaders)|Log\.|Security\.|Inspector\.|Performance\.|Fetch\.)/.test(m);
+function noteCommand(method: string) {
+  log.push({ at: Date.now(), method }); if (log.length > 60) log.shift();
+  if (!method || isSetup(method)) return;
+  startIfIdle(); session.lastCmd = Date.now();
+}
+const startIfIdle = () => { if (!isActive().active) { session.id++; session.since = Date.now(); } }; // a new session begins when something wakes an idle browser
+export function isActive(): { active: boolean; reason: string } {
+  if (control.holder === "human") return { active: true, reason: "human" };
+  if (control.pending) return { active: true, reason: "help-request" };
+  if (Date.now() - session.lastCmd < ACTIVE_WINDOW_MS) return { active: true, reason: "recent" };
+  return { active: false, reason: "idle" };
+}
+
 // Methods that act on the page; refused for the agent while the human holds control (reads and screenshots still work).
 export const blocked = (method: string) => /^Input\./.test(method) || /^Page\.(navigate|navigateToHistoryEntry|reload|close|handleJavaScriptDialog)$/.test(method) || /^Target\.(createTarget|closeTarget)$/.test(method);
 
@@ -38,7 +58,7 @@ export async function startBrowser() {
   for (let i = 0; i < 50 && !existsSync("/tmp/.X11-unix/X99"); i++) await sleep(100);
   supervise("x11vnc", "x11vnc", ["-display", DISPLAY, "-forever", "-shared", "-nopw", "-rfbport", "5900", "-localhost", "-quiet"]);
   supervise("chromium", "/usr/local/bin/orcie-chromium", ["--no-sandbox", `--remote-debugging-port=${CDP}`, "--remote-debugging-address=127.0.0.1", `--user-data-dir=${PROFILE}`, "--window-position=0,0", "--window-size=1280,800",
-    "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "about:blank"]);
+    "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--test-type", "--disable-infobars", "--hide-crash-restore-bubble", "--disable-session-crashed-bubble", "about:blank"]);
   startProxy();
 }
 
@@ -61,8 +81,10 @@ function startProxy() {
     up.onopen = () => { for (const q of queue.splice(0)) up.send(q); };
     up.onmessage = (e) => client.send(typeof e.data === "string" ? e.data : Buffer.from(e.data as ArrayBuffer));
     up.onclose = () => client.close(); up.onerror = () => client.close(); client.onClose = () => { try { up.close(); } catch { /* closed */ } };
+    session.clients++; client.onClose = ((prev) => () => { session.clients--; prev(); })(client.onClose);
     client.onMessage = (m) => {
       const text = m.data.toString();
+      try { const j = JSON.parse(text); noteCommand(String(j?.method ?? "")); } catch { /* not JSON */ }
       if (control.holder === "human") { try { const j = JSON.parse(text); if (j && blocked(String(j.method ?? ""))) return void client.send(JSON.stringify({ id: j.id, error: { code: -32000, message: "The human has taken control of this browser. Wait until they hand it back (run browser_help to ask for it)." } })); } catch { /* forward as is */ } }
       up.readyState === 1 ? up.send(text) : queue.push(text);
     };
@@ -86,9 +108,15 @@ export async function browserHttp(req: IncomingMessage, res: ServerResponse, bod
   const human = tokenOk(req), local = isLocal(req);
   if (!human && !local) return void json(403, { error: "forbidden" }) ?? true;
   if (req.method === "GET" && path === "/browser/state") return void json(200, { ...(await pageInfo()), control: view() }) ?? true;
+  if (req.method === "GET" && path === "/browser/active") { // is the agent using its browser right now (no page content; the URL only for the human)
+    const a = isActive(); const info = human ? await pageInfo() : null;
+    if (a.active && !session.since) { session.id++; session.since = Date.now(); }
+    return void json(200, { active: a.active, reason: a.reason, id: session.id, since: session.since, ...(human ? { url: info?.url ?? null, title: info?.title ?? null } : {}) }) ?? true;
+  }
+  if (req.method === "GET" && path === "/browser/activity-log") return void json(200, { clients: session.clients, log: log.slice(-40) }) ?? true;
   if (req.method === "GET" && path === "/browser/control") return void json(200, view()) ?? true;
   if (req.method === "POST" && path === "/browser/control/request") { // the agent asks the human to take over (log in, CAPTCHA, ...)
-    control.pending = true; control.reason = String(body.reason ?? "").slice(0, 500) || "help needed"; control.note = null; return void json(200, view()) ?? true;
+    startIfIdle(); control.pending = true; control.reason = String(body.reason ?? "").slice(0, 500) || "help needed"; control.note = null; return void json(200, view()) ?? true;
   }
   if (req.method === "GET" && path === "/browser/control/wait") { // long poll: resolves when the browser is back with the agent
     const ms = Math.min(Number(url.searchParams.get("timeout")) || 900, 3600) * 1000;
@@ -97,7 +125,7 @@ export async function browserHttp(req: IncomingMessage, res: ServerResponse, bod
     return void json(200, view()) ?? true;
   }
   if (!human) return void json(403, { error: "human-only" }) ?? true; // everything below is the human (via the orcie server)
-  if (req.method === "POST" && path === "/browser/control/take") { control.holder = "human"; control.since = Date.now(); control.pending = false; return void json(200, view()) ?? true; }
+  if (req.method === "POST" && path === "/browser/control/take") { startIfIdle(); control.holder = "human"; control.since = Date.now(); control.pending = false; return void json(200, view()) ?? true; }
   if (req.method === "POST" && path === "/browser/control/release") { control.holder = "agent"; control.since = Date.now(); control.pending = false; control.note = String(body.note ?? "").slice(0, 1000) || null; settle(); return void json(200, view()) ?? true; }
   if (req.method === "POST" && path === "/browser/control/cancel") { control.pending = false; control.reason = null; settle(); return void json(200, view()) ?? true; }
   if (req.method === "POST" && path === "/browser/type") { // type into the focused field (OTPs, passwords) without the clipboard

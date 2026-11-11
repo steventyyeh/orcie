@@ -451,7 +451,7 @@ const uiServer = createServer(async (req, res) => {
     const bad = guard(UI_PORT, { method: req.method, host: req.headers.host, origin: req.headers.origin, contentType: req.headers["content-type"] });
     if (bad) return json(bad.status, { error: bad.error });
     const url = (req.url ?? "").split("?")[0]; let m0: RegExpMatchArray | null;
-    if (req.method === "GET" && (url === "/" || url === "/index.html")) {
+    if (req.method === "GET" && (url === "/" || url === "/index.html" || /^\/(dm|room)\/[^/]+$/.test(url))) { // the page itself; /dm/<agent>, /room/<name>, /dm/<a>+<b> open that conversation (the UI reads the path)
       res.writeHead(200, { "content-type": "text/html" }); return void res.end(readFileSync(WEB));
     }
     if (req.method === "GET" && url.startsWith("/novnc/")) { // vendored noVNC client for the live-browser panel
@@ -459,7 +459,7 @@ const uiServer = createServer(async (req, res) => {
       if (!f.startsWith(`${NOVNC}/`) || !existsSync(f)) return json(404, { error: "not found" });
       res.writeHead(200, { "content-type": f.endsWith(".js") ? "application/javascript" : f.endsWith(".css") ? "text/css" : "application/octet-stream" }); return void res.end(readFileSync(f));
     }
-    if ((m0 = url.match(/^\/api\/agents\/([^/]+)\/browser\/(state|control|screenshot|take|release|cancel|type|restart)$/))) return void (await browserApi(m0[1], m0[2], req.method ?? "GET", req.headers["content-type"] ? await readJson(req) : {}, res));
+    if ((m0 = url.match(/^\/api\/agents\/([^/]+)\/browser\/(state|control|screenshot|active|take|release|cancel|type|restart)$/))) return void (await browserApi(m0[1], m0[2], req.method ?? "GET", req.headers["content-type"] ? await readJson(req) : {}, res));
     if (url === "/api/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
       res.write(": ok\n\n"); clients.add(res); return void req.on("close", () => clients.delete(res));
@@ -537,6 +537,7 @@ const uiServer = createServer(async (req, res) => {
       if (!["active", "done", "cancelled"].includes(b.status)) return json(400, { error: "status must be active, done or cancelled" });
       db.setPromise(p.id, b.status, b.note ? String(b.note).slice(0, 500) : null); emit({ type: "promises", agent: p.agent }); return json(200, db.getPromise(p.id));
     }
+    if (req.method === "GET" && url === "/api/browser/sessions") return json(200, { sessions: Object.fromEntries(browserSessions) });
     if (req.method === "GET" && url === "/api/activity") return json(200, { busy: [...inflight].filter(([, v]) => v.size).map(([agent, v]) => ({ agent, conversations: [...v] })) });
     if (req.method === "GET" && url === "/api/stats") return json(200, await fleetStats());
     if (req.method === "GET" && url === "/api/check") { const only = new URL(req.url!, "http://x").searchParams.get("agent"); return json(200, { agents: await Promise.all(Object.values(agents).filter((a) => a.kind !== "external" && a.kind !== "tmux" && (!only || a.name === only)).map((a) => checkAgent(a))) }); }
@@ -664,7 +665,7 @@ async function browserApi(name: string, action: string, method: string, b: any, 
   const a = agents[name]; if (!a) return send(404, { error: "no such agent" });
   if (a.kind === "external" || a.kind === "tmux") return send(400, { error: "this agent has no container browser" });
   const mutate = method === "POST";
-  if (["state", "control", "screenshot"].includes(action) === mutate) return send(405, { error: "method not allowed" });
+  if (["state", "control", "screenshot", "active"].includes(action) === mutate) return send(405, { error: "method not allowed" });
   try {
     const r = await hbrowser(a, action === "take" || action === "release" || action === "cancel" ? `/browser/control/${action}` : `/browser/${action}`, method, b);
     if (action === "screenshot") { res.writeHead(r.status, { "content-type": r.headers.get("content-type") ?? "image/png", "cache-control": "no-store" }); return void res.end(Buffer.from(await r.arrayBuffer())); }
@@ -719,3 +720,23 @@ async function ensureCurrentImage() {
   emit({ type: "state" });
 }
 ensureCurrentImage().catch((e) => console.error("image check", e));
+
+// ---- browser session watcher: tells the UI when an agent starts/stops using its browser (drives the inline live view) ----
+type BSession = { active: boolean; reason: string; id: number; since: number; url?: string | null; title?: string | null };
+const browserSessions = new Map<string, BSession>();
+const bPorts = new Map<string, number>();
+let bBusy = false;
+async function pollBrowserSessions() {
+  if (bBusy || !clients.size) return; bBusy = true;
+  try {
+    await Promise.all(Object.values(agents).filter((a) => (a.kind ?? "claude") === "claude" && a.profile?.tools?.browser !== false).map(async (a) => {
+      try {
+        let port = bPorts.get(a.container); if (!port) { port = hostPort(a.container); bPorts.set(a.container, port); }
+        const j = await (await fetch(`http://127.0.0.1:${port}/browser/active`, { headers: { authorization: `Bearer ${agentToken(SECRET, a.name)}` }, signal: AbortSignal.timeout(1500) })).json() as BSession;
+        const prev = browserSessions.get(a.name); browserSessions.set(a.name, j);
+        if (!prev ? j.active : prev.active !== j.active || prev.reason !== j.reason || prev.id !== j.id || (j.active && prev.url !== j.url)) emit({ type: "browser-session", agent: a.name, ...j });
+      } catch { bPorts.delete(a.container); }
+    }));
+  } finally { bBusy = false; }
+}
+setInterval(() => { pollBrowserSessions().catch(() => {}); }, 2000).unref();

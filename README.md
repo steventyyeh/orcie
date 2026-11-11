@@ -42,3 +42,6 @@ Containers are Linux, so anything that needs macOS tools (Xcode, simulators) has
 
 ## Orca parity features
 Per-agent identity tokens and a request guard ([SECURITY.md](docs/SECURITY.md)), automatic long-term memory with `remember`/`recall`/`read_room`, Stop/Restart/live model change, asked-vs-mentioned addressing and a visible loop guard, `send_message`, a live picture-in-picture browser with take-control, promises, file attachments, HR profile fields (team, manager, responsibilities) editable after hiring, lay-off with confirmation, and fleet commands (`check`, `stats`, `attach`, `logs`, `restart`). See [docs/DESIGN.md](docs/DESIGN.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md). Run `npm test` for the test suite.
+
+## Live browser and URLs
+When an agent uses its browser, a live view appears inside the conversation by itself (take control and hand back right there; it collapses to a one-line row when idle), and a dot in the sidebar plus a header chip show it if you are in another conversation. Each conversation has its own URL (`/dm/alice`, `/room/design`, `/dm/alice+bob`): reload, bookmarks, new tabs and Back/Forward all work. See [docs/DESIGN.md](docs/DESIGN.md) and `docs/screenshots/`.

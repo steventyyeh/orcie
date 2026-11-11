@@ -80,7 +80,20 @@ One HTTP service per container (`harness/src/index.ts`), every endpoint except `
 
 ## 8. Live browser
 
-Each agent's Playwright MCP drives a persistent headed Chromium on Xvfb inside its container (profile on the volume, so logins persist) through a CDP proxy (`harness/src/browser.ts`). x11vnc exposes it only on the container's loopback. The operator watches in a picture-in-picture panel: the server relays VNC over a WebSocket through `docker exec` (no port published; Origin, Host and loopback checked) to the vendored noVNC client, falling back to screenshots. **Take control** makes the proxy refuse the agent's input, navigation and tab actions until the operator **hands back** with an optional note; the operator can type text into the focused field. The agent asks for help with `browser_help "<why>"`, which notifies the UI and waits for the hand-back.
+Each agent's Playwright MCP drives a persistent headed Chromium on Xvfb inside its container (profile on the volume, so logins persist) through a CDP proxy (`harness/src/browser.ts`). x11vnc exposes it only on the container's loopback.
+
+**Automatic inline view (like Orca's `mountBrowserView`).** The harness tracks real browser activity: a page command from the agent in the last 60 s, the human holding control, or a pending help request makes the session *active* (`GET /api/agents/:name/browser/active`; connection setup alone does not count, so a turn that never touches the browser is not "browsing"). The server watches every agent's session every 2 s and pushes SSE `browser-session` events. The UI then:
+- mounts the live view **inside the conversation**, attached to the agent's current turn (its last message if that is the newest thing, otherwise a placeholder turn that the agent's reply later takes over), in the agent's DM and in rooms or agent DMs where it is working;
+- shows a pulsing dot on that conversation in the sidebar and a "<agent> is browsing" chip in the header when you are looking at a different conversation;
+- offers **Take control**, hand-back with a note, typing into the focused field, Restart browser, Expand, and an optional **Pop out** floating window, all on the inline view;
+- after two quiet polls (never while you hold control) freezes on the last frame and collapses to a one-line "Browser session ended" row that re-expands.
+The header's Browser button mounts the view by hand.
+
+The server relays VNC over a WebSocket through `docker exec` (no port published; Origin, Host and loopback checked) to the vendored noVNC client, falling back to screenshots. **Take control** makes the proxy refuse the agent's input, navigation and tab actions until the operator hands back. The agent asks for help with `browser_help "<why>"`, which notifies the UI and waits for the hand-back.
+
+## 8b. Conversation URLs
+
+Every conversation has its own address: `/dm/<agent>`, `/room/<name>`, `/dm/<a>+<b>` (the server serves the page for these GET paths; `?msg=<seq>` scrolls to and highlights a message). The UI pushes a history entry when you switch, so Back and Forward move between conversations; reloading or pasting a URL (new tab, bookmark) opens that conversation; an unknown or deleted conversation falls back to the default with a notice. The page title carries the unread count and the open conversation.
 
 ## 9. Files
 

@@ -179,3 +179,15 @@ test("fleet endpoints: activity, stats and check answer without Docker agents", 
   const stats = await (await ui("/api/stats")).json() as any; assert.ok(stats.agents.some((a: any) => a.name === "pat" && a.kind === "external"));
   assert.deepEqual(((await (await ui("/api/check")).json()) as any).agents, []); // only container agents are checked
 });
+
+// ---- stateful conversation URLs: the page is served at /dm/<agent>, /room/<name>, /dm/<a>+<b>; API routes are unaffected
+test("conversation paths serve the page (GET only); the API and the request guard are unaffected", async () => {
+  for (const p of ["/dm/alice", "/room/design", "/dm/alice+bob", "/room/some%20room", "/dm/nobody-here"]) {
+    const r = await ui(p); assert.equal(r.status, 200, p); assert.match(r.headers.get("content-type")!, /text\/html/); assert.match(await r.text(), /<title>/);
+  }
+  assert.equal((await ui("/dm/a/b")).status, 404); assert.equal((await ui("/room/")).status, 404); assert.equal((await ui("/rooms/x")).status, 404);
+  const post = await ui("/dm/alice", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); assert.notEqual(post.status, 200); // POST /dm/<x> is not the page
+  assert.equal((await ui("/dm/alice", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "a=b" })).status, 415); // the guard still applies
+  assert.equal((await ui("/api/state")).headers.get("content-type"), "application/json"); // the API is still JSON
+  assert.equal(await withHost("evil.example"), 403); // wrong Host is still refused (fetch cannot override Host, so withHost uses http.request)
+});

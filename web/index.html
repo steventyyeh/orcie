@@ -54,22 +54,32 @@ dialog.wide{width:min(640px,94vw)}dialog.wide form{max-height:86vh;overflow:auto
 #chips{display:flex;flex-wrap:wrap;gap:var(--s2);padding:var(--s2) var(--s3) 0}#chips:empty{display:none}
 .fchip{display:inline-flex;align-items:center;gap:var(--s2);padding:3px 8px;border-radius:var(--r2);border:1px solid var(--line-strong);font-size:12px;background:var(--hover)}.fchip button{border:0;background:none;cursor:pointer;color:var(--mute);padding:0}
 .files{display:flex;flex-wrap:wrap;gap:var(--s2);margin-top:var(--s2)}.files a.fchip{text-decoration:none;color:var(--fg)}.files img{max-height:160px;max-width:320px;border-radius:var(--r2);border:1px solid var(--line)}
-/* live browser, picture-in-picture */
-#pip{position:fixed;right:var(--s5);bottom:var(--s5);width:520px;height:420px;min-width:320px;min-height:260px;max-width:96vw;max-height:92vh;z-index:60;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--r3,10px);box-shadow:0 8px 32px rgba(0,0,0,.28);resize:both;overflow:hidden}
-#pip.max{inset:var(--s4);width:auto;height:auto;resize:none}
-#pip .ph{display:flex;align-items:center;gap:var(--s3);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line);cursor:move;user-select:none;font-size:13px}
-#pip .ph b{font-weight:600}
-#pip .chip{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;background:var(--hover);color:var(--fg)}
-#pip .chip.agent{background:color-mix(in srgb,var(--accent) 16%,transparent)}
-#pip .chip.human{background:color-mix(in srgb,#2e9e5b 22%,transparent)}
-#pip .chip.ask{background:color-mix(in srgb,#d98e04 28%,transparent);animation:none}
-#pip .pl{flex:1}
-#pip .pb{flex:1;min-height:0;position:relative;background:#111;display:flex;align-items:center;justify-content:center}
-#pip .pb .cv{position:absolute;inset:0}
-#pip .pb img{max-width:100%;max-height:100%;object-fit:contain}
-#pip .pm{position:absolute;left:0;right:0;top:0;padding:var(--s2) var(--s3);font-size:12px;background:rgba(0,0,0,.7);color:#fff;z-index:2}
-#pip .pf{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);border-top:1px solid var(--line)}
-#pip input[type=text]{flex:1;min-width:120px;height:30px;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);padding:0 var(--s2);font-size:13px}
+/* live browser: embedded in the conversation, with an optional floating pop-out */
+.bv{display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--r3);overflow:hidden}
+.bv.inline{width:min(100%,780px);margin:var(--s2) 0}
+.bv.pip{position:fixed;right:var(--s5);bottom:var(--s5);width:520px;height:420px;min-width:320px;min-height:260px;max-width:96vw;max-height:92vh;z-index:60;box-shadow:0 8px 32px rgba(0,0,0,.28);resize:both}
+.bv.max{position:fixed;inset:var(--s4);z-index:70;width:auto;height:auto;max-width:none;margin:0;box-shadow:0 8px 48px rgba(0,0,0,.45);resize:none}
+.bv .bvh{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line);font-size:13px}
+.bv.pip .bvh{cursor:move;user-select:none}
+.bv .bvu{color:var(--mute);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.bv .pl{flex:1}
+.bv .chip{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;background:var(--hover);color:var(--fg);white-space:nowrap}
+.bv .chip.agent{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.bv .chip.human{background:color-mix(in srgb,#2e9e5b 22%,transparent)}
+.bv .chip.ask{background:color-mix(in srgb,#d98e04 28%,transparent)}
+.bv .bvb{position:relative;background:#111;aspect-ratio:16/10;display:flex;align-items:center;justify-content:center}
+.bv.pip .bvb,.bv.max .bvb{aspect-ratio:auto;flex:1;min-height:0}
+.bv .bvb .cv{position:absolute;inset:0}
+.bv .bvb img{max-width:100%;max-height:100%;object-fit:contain}
+.bv .pm{position:absolute;left:0;right:0;top:0;padding:var(--s2) var(--s3);font-size:12px;background:rgba(0,0,0,.7);color:#fff;z-index:2}
+.bv .bvf{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);border-top:1px solid var(--line)}
+.bv input[type=text]{flex:1;min-width:120px;height:30px;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);padding:0 var(--s2);font-size:13px}
+details.browser-ended{margin:var(--s2) 0;border:1px solid var(--line);border-radius:var(--r2);padding:var(--s1) var(--s3);font-size:13px;color:var(--mute);width:min(100%,780px)}
+details.browser-ended summary{cursor:pointer;padding:var(--s1) 0}
+details.browser-ended .bvfrozen img{display:block;max-width:100%;border-radius:var(--r2);margin:var(--s2) 0;border:1px solid var(--line)}
+.bdot{width:8px;height:8px;border-radius:50%;background:#2e9e5b;flex:none;margin-left:var(--s2);animation:bpulse 1.6s infinite}
+@keyframes bpulse{0%{box-shadow:0 0 0 0 rgba(46,158,91,.6)}70%{box-shadow:0 0 0 6px rgba(46,158,91,0)}100%{box-shadow:0 0 0 0 rgba(46,158,91,0)}}
+.bchip{border-color:#2e9e5b!important}
 .btn:disabled{opacity:.5;cursor:not-allowed;filter:none}
 .iconbtn{width:32px;height:32px;display:grid;place-items:center;border-radius:var(--r1);border:0;background:transparent;color:var(--mute);transition:background .12s}
 .iconbtn:hover{background:var(--card);color:var(--fg)}
@@ -407,10 +417,10 @@ function section(id, title, addTitle, onAdd, items) {
   el.innerHTML = `<div class="hd"><button class="t">${ic("caret", "car")}<span>${title}</span></button>${onAdd ? `<button class="add" title="${addTitle}">${ic("plus")}</button>` : ""}</div><div class="list"></div>`;
   el.querySelector(".t").onclick = () => { closed[id] = !closed[id]; persist(); el.classList.toggle("closed"); };
   if (onAdd) el.querySelector(".add").onclick = onAdd;
-  const list = el.querySelector(".list");
+  const list = el.querySelector(".list"), browsing = browsingConvs();
   items.forEach((i) => {
     const d = document.createElement("div"); d.className = "item" + (i.id === cur ? " on" : "") + (i.badge ? " unread" : "") + (i.busy ? " busy" : "");
-    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span>` + (i.tag ? `<span class="tag" title="${i.tag === "mac" ? "Existing tmux session on the Mac, no container" : "External agent: bridged through the private API, no container"}">${i.tag}</span>` : "") + (i.busy ? '<span class="livedot" title="Working"></span>' : "") + (drafts[i.id] && i.id !== cur ? `<span class="draftmark" title="Unsent draft">${ic("pencil")}</span>` : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
+    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span>` + (i.tag ? `<span class="tag" title="${i.tag === "mac" ? "Existing tmux session on the Mac, no container" : "External agent: bridged through the private API, no container"}">${i.tag}</span>` : "") + (i.busy ? '<span class="livedot" title="Working"></span>' : "") + (browsing[i.id] ? `<span class="bdot" title="${esc(browsing[i.id].join(", "))} browsing: open to watch"></span>` : "") + (drafts[i.id] && i.id !== cur ? `<span class="draftmark" title="Unsent draft">${ic("pencil")}</span>` : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
     d.onclick = () => open(i.id); list.append(d);
   });
   if (!items.length) { const e = document.createElement("div"); e.className = "item none"; e.textContent = "Nothing here yet"; list.append(e); }
@@ -431,7 +441,7 @@ function drawNav() {
   );
   nav.scrollTop = scroll;
   const n = convs.reduce((a, c) => a + unread(c), 0);
-  document.title = (n ? `(${n}) ` : "") + "Orcie";
+  document.title = (n ? `(${n}) ` : "") + (conv ? `${conv.kind === "room" ? "#" : ""}${pairTitle(conv.title)} \u00b7 ` : "") + "Orcie"; // unread count, then the open conversation
   const b = busy.size; $("footText").textContent = `${state.agents.length} agent${state.agents.length === 1 ? "" : "s"}, ${b ? b + " working" : "all idle"}`;
 }
 async function refresh() { state = await api("/state"); drawNav(); drawHeader(); }
@@ -459,7 +469,7 @@ function drawHeader() {
     sel.onchange = async () => { try { await api(`/agents/${encodeURIComponent(agent.name)}/model`, "POST", { model: sel.value }); toast("Model changed"); await refresh(); } catch (err) { toast(err.message); sel.value = agent.model; } };
     const rb = document.createElement("button"); rb.className = "btn sm"; rb.textContent = "Restart"; rb.title = "Restart this agent's process (stops running work; memory and files stay)";
     rb.onclick = async () => { if (!confirm(`Restart ${agent.name}? Running work is stopped.`)) return; rb.disabled = true; try { await api(`/agents/${encodeURIComponent(agent.name)}/restart`, "POST", {}); toast(`${agent.name} restarted`); } catch (err) { toast(err.message); } rb.disabled = false; };
-    const bb = document.createElement("button"); bb.className = "btn sm"; bb.textContent = "Browser"; bb.title = "Watch this agent's browser live; take control when needed"; bb.onclick = () => openPip(agent.name);
+    const bb = document.createElement("button"); bb.className = "btn sm"; bb.textContent = "Browser"; bb.title = "Show this agent's live browser in the conversation; take control when needed"; bb.onclick = () => openBrowser(agent.name);
     h.append(sel, rb, bb);
   }
   if (!room && !ro && agent) { // Manage: HR profile, promises, lay off
@@ -468,6 +478,7 @@ function drawHeader() {
       [["Edit profile", () => editProfile(agent)], ["Promises", () => showPromises(agent.name)], ["Remove agent", () => removeAgent(agent.name)]].forEach(([t, fn]) => { const x = document.createElement("div"); x.className = "row"; x.textContent = t; x.onclick = () => { closePops(); fn(); }; p.append(x); }); w.append(p); };
     h.append(w);
   }
+  Object.entries(browsingConvs()).forEach(([cid, ags]) => { if (cid !== cur) ags.forEach((a) => { const b = document.createElement("button"); b.className = "btn sm bchip"; b.textContent = `${a} is browsing`; b.title = "Open the conversation where the live browser is"; b.onclick = () => open(cid); h.append(b); }); }); // visible from any conversation
   if (!room) return;
   const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
   st.innerHTML = `<span class="avs">${conv.members.slice(0, 4).map((m) => av(m, "xs")).join("")}</span><span>${conv.members.length} member${conv.members.length === 1 ? "" : "s"}</span>`; h.append(st);
@@ -513,6 +524,7 @@ function actEl(items, html, open) {
   const s = document.createElement("summary"); s.innerHTML = html; d.append(s); items.forEach((it) => d.append(toolEl(it))); return d;
 }
 
+api("/browser/sessions").then((x) => { for (const [a, st] of Object.entries(x.sessions)) bsess[a] = { agent: a, ...st }; if (cur) { drawNav(); autoMount(); } }).catch(() => {});
 let models = null; api("/models").then((r) => { models = r.models; }).catch(() => {});
 const sc = $("scroller");
 const nearBottom = () => sc.scrollHeight - sc.scrollTop - sc.clientHeight < 100;
@@ -523,13 +535,23 @@ function renderAll(newFrom) {
   const nd = sc.querySelector(".newdiv"); nd ? nd.scrollIntoView({ block: "center" }) : (sc.scrollTop = sc.scrollHeight);
 }
 
-async function open(id, focusSeq) {
+// ---- every conversation has its own URL: /dm/<agent>, /room/<name>, /dm/<a>+<b>; ?msg=<seq> scrolls to a message ----
+const pathFor = (id) => (id.startsWith("room:") ? `/room/${encodeURIComponent(id.slice(5))}` : `/dm/${encodeURIComponent(id.slice(3)).replace(/%2B/gi, "+")}`);
+const idFromPath = (p) => { const m = p.match(/^\/(room|dm)\/([^/]+)$/); if (!m) return null; let v; try { v = decodeURIComponent(m[2]); } catch { return null; } return m[1] === "room" ? `room:${v}` : `dm:${v}`; };
+function syncUrl(id, focusSeq, how) { // how: "push" (a user navigation), "replace" (initial load), "pop" (back/forward: the URL already changed)
+  if (how === "pop") return; const u = pathFor(id) + (focusSeq ? `?msg=${focusSeq}` : "");
+  if (location.pathname + location.search !== u) history[how === "replace" ? "replaceState" : "pushState"]({ id }, "", u);
+}
+const defaultConv = () => state.conversations.find((c) => c.kind === "room") || state.conversations[0];
+async function open(id, focusSeq, how = "push") {
   if (cur && id !== cur) { saveDraft(); drawNav(); }
-  cur = id; conv = await api("/conversations/" + encodeURIComponent(id));
+  let loaded; try { loaded = await api("/conversations/" + encodeURIComponent(id)); } catch (err) { // deleted or unknown: say so and show the default instead of a blank page
+    const d = defaultConv(); toast(`That conversation no longer exists${d && d.id !== id ? `. Showing ${pairTitle(d.title)}` : ""}.`); if (d && d.id !== id) return open(d.id, undefined, "replace"); return; }
+  cur = id; conv = loaded; syncUrl(id, focusSeq, how); drawNav();
   const newFrom = conv.messages.find((m) => m.seq > (readAt[id] ?? 0) && m.from !== "user" && m.from !== "system")?.seq ?? null;
   const ro = false; $("comp").classList.toggle("off", ro); $("txt").disabled = ro;
   $("txt").placeholder = id.includes("+") ? "Post here to resume a paused agent conversation" : conv.kind === "room" ? `Message #${conv.title}. Use @name to address one agent.` : `Message ${conv.title}`;
-  txt.value = drafts[id] ?? ""; drawChips(); renderAll(newFrom); drawLive(); drawHeader(); markRead(); updSend(); if (!ro) txt.focus();
+  txt.value = drafts[id] ?? ""; drawChips(); renderAll(newFrom); restoreViews(); drawLive(); drawHeader(); markRead(); updSend(); if (!ro) txt.focus();
   $("jump").style.display = "none";
   if (focusSeq) { const el = sc.querySelector(`[data-seq="${focusSeq}"]`); if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); } }
 }
@@ -590,66 +612,131 @@ $("fileIn").onchange = async () => {
 const filesEl = (files) => { const w = document.createElement("div"); w.className = "files"; files.forEach((f) => { const a = document.createElement("a"); a.className = "fchip"; a.href = `/api/files/${f.id}`; a.download = f.name; a.textContent = `${f.name} (${kb(f.size)})`; w.append(a);
   if (/\.(png|jpe?g|gif|webp)$/i.test(f.name)) { const im = document.createElement("img"); im.src = `/api/files/${f.id}?inline=1`; im.alt = f.name; im.loading = "lazy"; w.append(im); } }); return w; };
 
-// ---- live browser panel (picture-in-picture): watch the agent's browser, take control, hand it back ----
-let pip = null;
-async function openPip(agent) {
-  if (pip && pip.agent === agent) return;
-  closePip();
-  const el = document.createElement("div"); el.id = "pip";
-  el.innerHTML = `<div class="ph"><b>${esc(agent)}</b><span class="chip agent" data-r="chip">Connecting</span><span class="pl"></span><button class="btn sm" data-r="max" title="Fullscreen">Expand</button><button class="btn sm" data-r="close" title="Close (the agent keeps its browser)">Close</button></div>
-    <div class="pb"><div class="cv" data-r="cv"></div><img data-r="shot" alt="" hidden><div class="pm" data-r="msg" hidden></div></div>
-    <div class="pf"><button class="btn sm p" data-r="take">Take control</button><button class="btn sm" data-r="dismiss" hidden>Dismiss request</button>
-      <input type="text" data-r="note" placeholder="Hand-back note (optional)" hidden><button class="btn sm p" data-r="back" hidden>Hand back</button>
-      <input type="text" data-r="typ" placeholder="Type into the focused field, then Enter" hidden><button class="btn sm" data-r="reconnect" hidden>Reconnect</button><button class="btn sm" data-r="restart" title="Close pages and restart this browser">Restart browser</button></div>`;
-  document.body.append(el);
-  const r = (n) => el.querySelector(`[data-r="${n}"]`);
-  pip = { agent, el, r, rfb: null, ctl: null, shot: null, poll: null };
-  r("close").onclick = closePip; r("max").onclick = () => el.classList.toggle("max");
-  r("take").onclick = () => pipCall("take"); r("dismiss").onclick = () => pipCall("cancel");
-  r("back").onclick = async () => { await pipCall("release", { note: r("note").value.trim() }); r("note").value = ""; };
-  r("reconnect").onclick = () => pipVnc();
-  r("restart").onclick = async () => { if (confirm("Restart this browser? Open pages are closed; logins are kept.")) { await pipCall("restart"); setTimeout(pipVnc, 2500); } };
+// ---- live browser: embedded in the conversation like Orca's mountBrowserView; optional floating pop-out ----
+// The server reports when an agent starts/stops using its browser (SSE "browser-session"). The view mounts by itself on the
+// agent's current turn, has take-control/hand-back inline, and when the browser goes idle it freezes on its last frame and
+// collapses to a one-line row that can be re-opened.
+const bsess = {};          // agent -> latest session info {active, reason, id, url, title}
+const bviews = [];         // every inline view (live or ended) in this page's lifetime
+let pipView = null;        // optional floating pop-out
+const bhost = (u) => { try { return new URL(u).host; } catch { return ""; } };
+const liveView = (agent) => bviews.find((v) => v.agent === agent && !v.ended);
+function targetConv(agent) { for (const c of [cur, ...Object.keys(typing)]) if (c && typing[c]?.[agent]) return c; return `dm:${agent}`; } // where the agent is working, else its DM
+
+function makeView(agent, mode) {
+  const el = document.createElement("div"); el.className = `bv ${mode}`; el.dataset.agent = agent;
+  el.innerHTML = `<div class="bvh"><span class="chip agent" data-r="chip">Connecting</span><span class="bvu" data-r="url"></span><span class="pl"></span>
+      ${mode === "inline" ? '<button type="button" class="btn sm" data-r="pop" title="Open in a floating window">Pop out</button>' : ""}<button type="button" class="btn sm" data-r="max">Expand</button><button type="button" class="btn sm" data-r="close" title="${mode === "pip" ? "Close the window" : "Collapse (the agent keeps its browser)"}">${mode === "pip" ? "Close" : "Hide"}</button></div>
+    <div class="bvb"><div class="cv" data-r="cv"></div><img data-r="shot" alt="" hidden><div class="pm" data-r="msg" hidden></div></div>
+    <div class="bvf"><button type="button" class="btn sm p" data-r="take">Take control</button><button type="button" class="btn sm" data-r="dismiss" hidden>Dismiss request</button>
+      <input type="text" data-r="note" placeholder="Hand-back note (optional)" hidden><button type="button" class="btn sm p" data-r="back" hidden>Hand back</button>
+      <input type="text" data-r="typ" placeholder="Type into the focused field, then Enter" hidden><button type="button" class="btn sm" data-r="reconnect" hidden>Reconnect</button><button type="button" class="btn sm" data-r="restart" title="Close pages and restart this browser">Restart browser</button></div>`;
+  const v = { agent, mode, el, r: (n) => el.querySelector(`[data-r="${n}"]`), rfb: null, ctl: null, poll: null, shot: null, ended: false, manual: false, conv: cur, sid: bsess[agent]?.id ?? 0, seq: null, ph: null, idle: null };
+  const r = v.r;
+  r("max").onclick = () => { el.classList.toggle("max"); r("max").textContent = el.classList.contains("max") ? "Shrink" : "Expand"; };
+  r("close").onclick = () => (mode === "pip" ? pipClose() : endView(v));
+  if (r("pop")) r("pop").onclick = () => pipOpen(agent);
+  r("take").onclick = () => vCall(v, "take"); r("dismiss").onclick = () => vCall(v, "cancel");
+  r("back").onclick = async () => { await vCall(v, "release", { note: r("note").value.trim() }); r("note").value = ""; };
+  r("reconnect").onclick = () => vVnc(v);
+  r("restart").onclick = async () => { if (confirm("Restart this browser? Open pages are closed; logins are kept.")) { await vCall(v, "restart"); setTimeout(() => vVnc(v), 2500); } };
   r("typ").onkeydown = async (ev) => { if (ev.key !== "Enter" || !r("typ").value) return; const text = r("typ").value; r("typ").value = ""; try { await api(`/agents/${encodeURIComponent(agent)}/browser/type`, "POST", { text, submit: false }); } catch (err) { toast(err.message); r("typ").value = text; } };
-  const hd = el.querySelector(".ph"); let drag = null; // drag by the title bar
-  hd.onmousedown = (ev) => { if (ev.target.closest("button") || el.classList.contains("max")) return; const b = el.getBoundingClientRect(); drag = { x: ev.clientX - b.left, y: ev.clientY - b.top }; ev.preventDefault(); };
-  pip.mm = (ev) => { if (!drag) return; el.style.left = Math.max(0, ev.clientX - drag.x) + "px"; el.style.top = Math.max(0, ev.clientY - drag.y) + "px"; el.style.right = el.style.bottom = "auto"; };
-  pip.mu = () => { drag = null; }; addEventListener("mousemove", pip.mm); addEventListener("mouseup", pip.mu);
-  await pipControl(); pipVnc();
-  pip.poll = setInterval(pipControl, 2000);
+  return v;
 }
-function closePip() {
-  if (!pip) return; clearInterval(pip.poll); clearInterval(pip.shot); try { pip.rfb?.disconnect(); } catch {} removeEventListener("mousemove", pip.mm); removeEventListener("mouseup", pip.mu); pip.el.remove(); pip = null;
-}
-async function pipCall(action, body = {}) { if (!pip) return; try { pip.ctl = await api(`/agents/${encodeURIComponent(pip.agent)}/browser/${action}`, "POST", body); pipDraw(); } catch (err) { toast(err.message); } }
-async function pipControl() { if (!pip) return; try { pip.ctl = await api(`/agents/${encodeURIComponent(pip.agent)}/browser/control`); } catch { pip.ctl = null; } pipDraw(); }
-function pipDraw() {
-  if (!pip) return; const { r, ctl } = pip, human = ctl?.holder === "human", ask = ctl?.pending;
-  const chip = r("chip"); chip.className = "chip " + (human ? "human" : ask ? "ask" : "agent");
-  chip.textContent = !ctl ? "Unavailable" : human ? "You have control" : ask ? "Needs your help" : "Agent has control";
+async function vStart(v) { await vControl(v); vVnc(v); v.poll = setInterval(() => vControl(v), 2000); }
+function vStop(v) { clearInterval(v.poll); clearInterval(v.shot); clearTimeout(v.idle); try { v.rfb?.disconnect(); } catch {} v.rfb = null; }
+async function vCall(v, action, body = {}) { try { v.ctl = await api(`/agents/${encodeURIComponent(v.agent)}/browser/${action}`, "POST", body); vDraw(v); } catch (err) { toast(err.message); } }
+async function vControl(v) { try { v.ctl = await api(`/agents/${encodeURIComponent(v.agent)}/browser/control`); } catch { v.ctl = null; } vDraw(v); }
+function vDraw(v) {
+  if (v.ended) return; const { r, ctl } = v, human = ctl?.holder === "human", ask = ctl?.pending;
+  r("chip").className = "chip " + (human ? "human" : ask ? "ask" : "agent");
+  r("chip").textContent = !ctl ? "Unavailable" : human ? "You have control" : ask ? "Needs your help" : "Agent has control";
+  const bs = bsess[v.agent]; r("url").textContent = bs?.url && bs.url !== "about:blank" ? bs.url : "";
   r("take").hidden = human; r("dismiss").hidden = !ask; r("note").hidden = r("back").hidden = !human; r("typ").hidden = !human;
-  const m = r("msg"); m.hidden = !(ask && ctl.reason) || human; m.textContent = ask && ctl.reason ? `${pip.agent} asks: ${ctl.reason}` : "";
-  if (pip.rfb) pip.rfb.viewOnly = !human; // the agent holds the browser: watch only
+  const m = r("msg"); m.hidden = !(ask && ctl.reason) || human; m.textContent = ask && ctl.reason ? `${v.agent} asks: ${ctl.reason}` : "";
+  if (v.rfb) v.rfb.viewOnly = !human; // while the agent holds the browser you only watch
 }
-async function pipVnc() { // live view over VNC; if it is down, keep the picture alive with screenshots
-  if (!pip) return; const { r } = pip; try { pip.rfb?.disconnect(); } catch {} pip.rfb = null; clearInterval(pip.shot);
+async function vVnc(v) { // live view over VNC; if it is down, keep the picture alive with screenshots
+  const { r } = v; try { v.rfb?.disconnect(); } catch {} v.rfb = null; clearInterval(v.shot);
   try {
     const { default: RFB } = await import("/novnc/core/rfb.js");
-    const cv = r("cv"); cv.innerHTML = ""; r("shot").hidden = true;
-    const rfb = new RFB(cv, `ws://${location.host}/api/agents/${encodeURIComponent(pip.agent)}/browser/vnc-ws`, { shared: true });
-    rfb.scaleViewport = true; rfb.background = "#111"; rfb.viewOnly = pip.ctl?.holder !== "human"; pip.rfb = rfb; r("reconnect").hidden = true;
-    const down = () => { if (pip?.rfb !== rfb) return; pip.rfb = null; r("reconnect").hidden = false; pipShots(); };
+    r("cv").innerHTML = ""; r("shot").hidden = true;
+    const rfb = new RFB(r("cv"), `ws://${location.host}/api/agents/${encodeURIComponent(v.agent)}/browser/vnc-ws`, { shared: true });
+    rfb.scaleViewport = true; rfb.background = "#111"; rfb.viewOnly = v.ctl?.holder !== "human"; v.rfb = rfb; r("reconnect").hidden = true;
+    const down = () => { if (v.rfb !== rfb) return; v.rfb = null; r("reconnect").hidden = false; vShots(v); };
     rfb.addEventListener("disconnect", down); rfb.addEventListener("securityfailure", down);
-  } catch { pipShots(); }
+  } catch { vShots(v); }
 }
-function pipShots() {
-  if (!pip) return; const { r } = pip; r("cv").innerHTML = ""; const img = r("shot"); img.hidden = false; clearInterval(pip.shot);
-  const tick = async () => { if (!pip) return; try { const res = await fetch(`/api/agents/${encodeURIComponent(pip.agent)}/browser/screenshot?t=${Date.now()}`); if (res.ok) { const u = URL.createObjectURL(await res.blob()); const old = img.src; img.src = u; if (old.startsWith("blob:")) URL.revokeObjectURL(old); } } catch {} };
-  tick(); pip.shot = setInterval(tick, 1000);
+function vShots(v) {
+  const { r } = v; r("cv").innerHTML = ""; const img = r("shot"); img.hidden = false; clearInterval(v.shot);
+  const tick = async () => { try { const res = await fetch(`/api/agents/${encodeURIComponent(v.agent)}/browser/screenshot?t=${Date.now()}`); if (res.ok) { const u = URL.createObjectURL(await res.blob()); const old = img.src; img.src = u; if (old.startsWith("blob:")) URL.revokeObjectURL(old); } } catch {} };
+  tick(); v.shot = setInterval(tick, 1000);
 }
-function pipEvent(e) {
-  if (e.event === "request") { toast(`${e.agent} needs your help in its browser`); if (!pip) openPip(e.agent); }
-  if (pip && pip.agent === e.agent) { if (e.control) pip.ctl = e.control; pipDraw(); }
+
+// Place a view in the message flow: on the agent's last message if that is the newest thing in the conversation, otherwise on a
+// placeholder turn that the agent's real reply later replaces (relocateViews).
+function placeView(v) {
+  if (v.mode !== "inline" || v.conv !== cur) return;
+  const stick = nearBottom(); // decided before the view makes the page taller
+  let host = null;
+  if (v.seq != null) host = sc.querySelector(`.m[data-seq="${v.seq}"] .main`);
+  if (!host) {
+    const last = sc.lastElementChild, lm = conv.messages.at(-1);
+    if (last && last.matches(".m") && lm && lm.from === v.agent && last.dataset.seq == lm.seq && !last.querySelector(".bv, details.browser-ended") && Date.now() - Date.parse(lm.at) < 600e3) { host = last.querySelector(".main"); v.seq = lm.seq; v.ph = null; }
+    else {
+      const ph = msgNode({ seq: -1, from: v.agent, text: "", at: new Date().toISOString() }, lm, null), row = ph.querySelector(".m"); row.dataset.placeholder = "browser"; delete row.dataset.seq;
+      sc.append(ph); host = row.querySelector(".main"); v.ph = row; v.seq = null;
+    }
+  }
+  host.append(v.el); if (stick) sc.scrollTop = sc.scrollHeight;
 }
+function relocateViews(msg, node) { // the agent's real message arrived: move its placeholder's view there
+  const main = sc.querySelector(`.m[data-seq="${msg.seq}"] .main`); // (the fragment is empty once appended, so look the node up in the page)
+  if (main) for (const v of bviews) if (v.conv === cur && v.agent === msg.from && v.ph && document.contains(v.ph)) { main.append(v.el); v.seq = msg.seq; v.ph.remove(); v.ph = null; }
+}
+function restoreViews() { for (const v of bviews) if (v.conv === cur) { v.ph = null; placeView(v); } autoMount(); }
+
+function mountInline(agent, manual = false) {
+  const old = liveView(agent);
+  if (old) { if (old.conv === cur) { if (!document.contains(old.el)) placeView(old); return old; } if (manual) { endView(old, true); } else return old; }
+  const v = makeView(agent, "inline"); v.manual = manual; v.conv = manual ? cur : targetConv(agent); v.sid = bsess[agent]?.id ?? 0; bviews.push(v);
+  if (v.conv === cur) placeView(v);
+  vStart(v); drawNav(); return v;
+}
+async function endView(v, quiet) { // session over: keep the last frame, collapse to a row
+  if (v.ended) return; v.ended = true; vStop(v);
+  if (!quiet) { try { const res = await fetch(`/api/agents/${encodeURIComponent(v.agent)}/browser/screenshot?t=${Date.now()}`); if (res.ok) v.frame = URL.createObjectURL(await res.blob()); } catch {} }
+  const bs = bsess[v.agent], when = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), host = bhost(bs?.url);
+  const row = document.createElement("details"); row.className = "browser-ended"; row.dataset.agent = v.agent;
+  row.innerHTML = `<summary>Browser session ended ${esc(when)}${host ? `, ${esc(host)}` : ""}${v.frame ? "" : " (no frame captured)"}</summary><div class="bvfrozen">${v.frame ? `<img src="${v.frame}" alt="Last frame of the browser session">` : ""}</div>`;
+  if (v.el.parentNode) v.el.replaceWith(row); v.el = row; drawNav(); drawHeader();
+}
+function autoMount() { for (const a of Object.keys(bsess)) if (bsess[a]?.active && targetConv(a) === cur && !liveView(a)) mountInline(a); }
+function sessionEvent(e) {
+  bsess[e.agent] = e; const v = liveView(e.agent);
+  if (e.active) {
+    if (v) { clearTimeout(v.idle); if (!v.manual && v.sid && v.sid !== e.id) endView(v); else v.sid = e.id; }
+    if (targetConv(e.agent) === cur && !liveView(e.agent)) mountInline(e.agent);
+    for (const x of [...bviews, pipView].filter(Boolean)) if (x.agent === e.agent) vDraw(x);
+  } else if (v && !v.manual) { clearTimeout(v.idle); v.idle = setTimeout(() => { if (!v.ended && v.ctl?.holder !== "human") endView(v); }, 4000); } // two quiet polls, never while you are driving
+  drawNav(); drawHeader();
+}
+function browserEvent(e) { // control changes (take/release/request) from any tab
+  if (e.event === "request") toast(`${e.agent} needs your help in its browser`);
+  for (const x of [...bviews.filter((v) => !v.ended), pipView].filter(Boolean)) if (x.agent === e.agent) { if (e.control) x.ctl = e.control; vDraw(x); }
+}
+const browsingConvs = () => { const m = {}; for (const [a, s] of Object.entries(bsess)) if (s?.active) { const t = targetConv(a); (m[t] ||= []).push(a); } return m; }; // conv id -> agents browsing there
+function openBrowser(agent) { const v = liveView(agent); if (v && v.conv === cur) { v.el.scrollIntoView({ block: "center" }); return; } mountInline(agent, true); }
+
+// optional floating pop-out of the same browser
+function pipOpen(agent) {
+  pipClose(); const v = makeView(agent, "pip"); pipView = v; document.body.append(v.el);
+  const hd = v.el.querySelector(".bvh"); let drag = null;
+  hd.onmousedown = (ev) => { if (ev.target.closest("button") || v.el.classList.contains("max")) return; const b = v.el.getBoundingClientRect(); drag = { x: ev.clientX - b.left, y: ev.clientY - b.top }; ev.preventDefault(); };
+  v.mm = (ev) => { if (!drag) return; v.el.style.left = Math.max(0, ev.clientX - drag.x) + "px"; v.el.style.top = Math.max(0, ev.clientY - drag.y) + "px"; v.el.style.right = v.el.style.bottom = "auto"; };
+  v.mu = () => { drag = null; }; addEventListener("mousemove", v.mm); addEventListener("mouseup", v.mu); vStart(v);
+}
+function pipClose() { const v = pipView; if (!v) return; vStop(v); removeEventListener("mousemove", v.mm); removeEventListener("mouseup", v.mu); v.el.remove(); pipView = null; }
 
 // ---- composer ----
 const txt = $("txt");
@@ -824,13 +911,14 @@ es.onmessage = (ev) => {
     if (e.conv === cur) {
       const stick = nearBottom() || e.msg.from === "user", prev = conv.messages.at(-1);
       conv.messages.push(e.msg); if (sc.querySelector(".empty")) sc.innerHTML = "";
-      addNode(msgNode(e.msg, prev, null));
+      const mn = msgNode(e.msg, prev, null); addNode(mn); relocateViews(e.msg, mn);
       if (stick) sc.scrollTop = sc.scrollHeight; else $("jump").style.display = "block";
       markRead();
     }
     refresh();
   }
-  if (e.type === "browser") pipEvent(e);
+  if (e.type === "browser") browserEvent(e);
+  if (e.type === "browser-session") sessionEvent(e);
   if (e.type === "typing") { (typing[e.conv] ??= {})[e.agent] = e.on; if (e.on) (live[e.conv] ??= {})[e.agent] = []; drawNav(); if (e.conv === cur) { drawLive(); drawHeader(); } }
   if (e.type === "activity") {
     const items = ((live[e.conv] ??= {})[e.agent] ??= []);
@@ -840,7 +928,18 @@ es.onmessage = (ev) => {
 };
 setInterval(() => { refresh().catch(() => {}); }, 30000); // keeps external agents' online/offline status fresh
 es.onerror = () => { $("footText").textContent = "reconnecting…"; };
-refresh().then(() => { if (firstVisit) { state.conversations.forEach((c) => (readAt[c.id] = c.last?.seq ?? 0)); persist(); drawNav(); } const first = state.conversations.find((c) => c.kind === "room") || state.conversations[0]; if (first) open(first.id); });
+refresh().then(() => {
+  if (firstVisit) { state.conversations.forEach((c) => (readAt[c.id] = c.last?.seq ?? 0)); persist(); drawNav(); }
+  const wanted = idFromPath(location.pathname), msg = Number(new URLSearchParams(location.search).get("msg")) || undefined; // opening or reloading a URL lands in that conversation
+  if (wanted && state.conversations.some((c) => c.id === wanted)) return void open(wanted, msg, "replace");
+  const d = defaultConv(); if (wanted) toast(`${location.pathname} does not exist (any more). Showing ${d ? pairTitle(d.title) : "the start"} instead.`);
+  if (d) open(d.id, undefined, "replace");
+});
+addEventListener("popstate", () => { // back / forward move between the conversations you visited
+  const id = idFromPath(location.pathname), msg = Number(new URLSearchParams(location.search).get("msg")) || undefined;
+  if (id && state.conversations.some((c) => c.id === id)) return void open(id, msg, "pop");
+  const d = defaultConv(); if (id) toast("That conversation no longer exists."); if (d) open(d.id, undefined, "replace");
+});
 </script>
 </body>
 </html>
