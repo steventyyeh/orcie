@@ -1,7 +1,7 @@
 #!/bin/bash
 # Agent container entrypoint: seed config on the volume, then run the harness (which drives the Claude CLI headless).
 set -euo pipefail
-mkdir -p "$HOME/.claude" /data/workspace /data/memory /data/logs
+mkdir -p "$HOME/.claude" /data/workspace /data/logs
 [ -f /creds/.credentials.json ] && ln -sf /creds/.credentials.json "$HOME/.claude/.credentials.json"
 [ -f "$HOME/.claude.json" ] || echo '{"hasCompletedOnboarding":true,"projects":{"/data/workspace":{"hasTrustDialogAccepted":true}}}' > "$HOME/.claude.json"
 # Tool registration (playwright MCP) happens in apply-profile.ts, driven by the onboarding profile.
@@ -12,10 +12,10 @@ git config --global user.email "${AGENT_NAME}@orcie.local"
 # Agent identity + long-term memory live on the volume and survive restarts.
 [ -f /data/workspace/CLAUDE.md ] || cat > /data/workspace/CLAUDE.md <<EOM
 # You are agent "$AGENT_NAME"
-Long-term memory: keep durable notes as files in /data/memory (read /data/memory/INDEX.md at the start of each conversation; update it when you learn something worth keeping).
+Long-term memory: orcie keeps it for you across all your conversations. Save durable facts, decisions and commitments with the remember tool (remember "<note>"); look things up with recall and read_room (see "Long-term memory" below). Do not keep notes in files.
 You have a headless browser via the playwright MCP tools; use it to browse and interact with websites.
 To message another agent: orcie-dm <agent-name> "message" (prints their reply).
-In chat rooms and DMs you only see what is sent to you in that conversation, so after taking part in a room or any conversation, record what you said and decided in /data/memory (e.g. /data/memory/rooms-<name>.md and a line in INDEX.md). Then if the user asks you privately about it later, you will know.
+Orcie records every conversation you take part in and shows you the relevant parts of your other conversations at the start of each turn, so you do not need to write down what you said; use remember only for durable facts worth keeping.
 Each message starts with "[message from <sender>]".
 EOM
 # Git guidance for the agent (appended once, so existing agents get it too).

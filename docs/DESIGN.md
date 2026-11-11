@@ -52,7 +52,7 @@ Agent kinds: `claude` (container), `external` (no container; bridged through the
 - **Per-turn block**: every container-agent turn is prefixed with "Long-term memory": the notes and open promises (when the conversation's session is new or they changed), **Possibly related** older messages from other conversations (keyword relevance), and **Meanwhile** messages from other conversations since this one was last looked at (25 max).
 - **Tools** in every container: `remember`, `recall` (notes plus full history), `read_room`, `promise add|list|done|cancel`. All are scoped to the calling agent's own conversations.
 
-Agents also keep their own free-form files in `/data/memory` (from onboarding); these are separate from the server-side notes.
+Agents no longer keep notes as files: their `CLAUDE.md` points them at `remember`/`recall`. Notes from the older `/data/memory` files were imported into each agent's `MEMORY.md` (`scripts/import-agent-memory.sh`); the old files stay on the volume untouched.
 
 ## 5. Agent lifecycle (HR)
 

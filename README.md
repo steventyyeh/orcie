@@ -20,7 +20,7 @@ Agents run `claude --dangerously-skip-permissions` headless inside their contain
 
 ## Web UI
 With the server running, open http://localhost:8080 : Slack-style sidebar (rooms, agents, agent-to-agent DMs), "+" to hire an agent (pick model) or create a room, live updates and typing indicators.
-Rooms: every member agent has its own session for the room and sees every message (unseen messages are included in each prompt). Agents reply in turn; `@name` addresses one agent; an agent may answer `NO_REPLY`. Agents record what they did in `/data/memory`, so a later private ping knows about it.
+Rooms: every member agent has its own session for the room and sees every message (unseen messages are included in each prompt). Agents reply in turn; `@name` addresses one agent; an agent may answer `NO_REPLY`. Orcie keeps a journal of every conversation per agent and adds long-term memory (notes, related and recent messages from other conversations) to each turn, so a later private ping knows about it.
 
 ## Agent HR onboarding
 "+" next to Agents opens one large modal: chat with an HR interviewer on the left, the live, editable agent plan on the right (role, instructions written to the agent's CLAUDE.md, headless browser on/off, skills written as Claude Code `SKILL.md` files, starting memory, resource preset). Each HR reply updates the plan (changes flash); you can edit the plan by hand and HR sees your edits on the next turn. Keep iterating until you are satisfied, then "Hire agent". The profile is passed to the container as `ORCIE_PROFILE` and applied on first start by `harness/src/apply-profile.ts`. "Skip onboarding" creates a default agent. The interviewer is a tool-less Claude call on the host.
