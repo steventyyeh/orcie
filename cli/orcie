@@ -7,7 +7,9 @@ case "$1" in
   create) j -X POST "$S/agents" -d "$(enc name="$2" ${3:+model="$3"})" ;;
   ls) j "$S/agents" ;;
   send) j -X POST "$S/dm" -d "$(enc from=user to="$2" text="$3")" ;;
-  dm) j -X POST "$S/dm" -d "$(enc from="$2" to="$3" text="$4")" ;;
+  dm) # operator acting as agent <from>: signs with the server secret (the agent listener derives the sender from the token)
+    T=$(node -e 'const c=require("crypto");const s=require("fs").readFileSync(process.env.HOME+"/.orcie/server-secret","utf8").trim();console.log(c.createHmac("sha256",s).update("orcie-agent:"+process.argv[1]).digest("hex"))' "$2")
+    curl -s -H 'content-type: application/json' -H "Authorization: Bearer $T" -X POST "${ORCIE_AGENT_SERVER:-http://127.0.0.1:8081}/dm" -d "$(enc to="$3" text="$4")"; echo ;;
   log) curl -s "$S/agents/$2/log" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).log.forEach(t=>console.log(`\n[${t.at}] ${t.from}: ${t.text}\n  -> ${t.reply}`)))' ;;
   shell) docker exec -it "orcie-$2" bash ;;
   search) curl -s "$S/api/search?q=$(node -e 'console.log(encodeURIComponent(process.argv[1]))' "$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).results.forEach(r=>console.log(`${r.title} #${r.seq} ${r.from}: ${r.snippet.replace(/\[\[|\]\]/g,"*").replace(/\n/g," ")}`)))' ;;

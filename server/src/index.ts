@@ -18,6 +18,8 @@ type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[];
 // Orcie is subscription-only (Claude CLI login). Anthropic API credentials are never used: drop them so nothing inherits them.
 for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.env[k];
 import * as tmuxBridge from "./tmux-bridge.ts";
+import { guard, loadSecret, agentToken } from "./guard.ts";
+import { startAgentApi } from "./agent-api.ts";
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
 const CREDS = process.env.ORCIE_CREDS ?? `${process.env.HOME}/.orcie/creds`;
@@ -63,6 +65,9 @@ const emit = (e: unknown) => clients.forEach((c) => c.write(`data: ${JSON.string
 // which can go stale when the host or another container refreshes the shared refresh token.
 const TOKEN_FILE = process.env.ORCIE_TOKEN_FILE ?? `${process.env.HOME}/.orcie/token`;
 const GIT_DIR = process.env.ORCIE_GIT_DIR ?? `${process.env.HOME}/.orcie/git`; // shared git credential (token file), mounted read-only into every agent
+const SECRET_FILE = process.env.ORCIE_SECRET_FILE ?? `${process.env.HOME}/.orcie/server-secret`;
+const SECRET = loadSecret(SECRET_FILE); // derives each agent's identity token
+const UI_PORT = Number(process.env.PORT ?? 8080), AGENT_PORT = Number(process.env.ORCIE_AGENT_PORT ?? 8081);
 const readToken = () => (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "");
 function runContainer(name: string, model: string, profile?: Profile) {
   const token = readToken();
@@ -72,7 +77,7 @@ function runContainer(name: string, model: string, profile?: Profile) {
     "-v", `orcie-${name}-data:/data`, ...(token ? ["-e", "CLAUDE_CODE_OAUTH_TOKEN"] : ["-v", `${CREDS}:/creds`]), "-p", "127.0.0.1:0:9090",
     "--add-host", "host.docker.internal:host-gateway",
     ...(existsSync(`${GIT_DIR}/token`) ? ["-v", `${GIT_DIR}:/gitcreds:ro`] : []),
-    "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_MODEL=${model}`,
+    "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_AGENT_TOKEN=${agentToken(SECRET, name)}`, "-e", `ORCIE_SERVER=http://host.docker.internal:${AGENT_PORT}`, "-e", `ORCIE_MODEL=${model}`,
     ...(profile ? ["-e", `ORCIE_PROFILE=${Buffer.from(JSON.stringify(profile)).toString("base64")}`] : []), IMAGE],
     { encoding: "utf8", env: { ...process.env, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) } }); // token passed by env, not on the command line
   return container;
@@ -332,6 +337,8 @@ const view = (c: Conv) => ({ id: c.id, kind: c.kind, title: c.title, members: c.
 createServer(async (req, res) => {
   const json = (code: number, b: unknown) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(b)); };
   try {
+    const bad = guard(UI_PORT, { method: req.method, host: req.headers.host, origin: req.headers.origin, contentType: req.headers["content-type"] });
+    if (bad) return json(bad.status, { error: bad.error });
     const url = (req.url ?? "").split("?")[0];
     if (req.method === "GET" && (url === "/" || url === "/index.html")) {
       res.writeHead(200, { "content-type": "text/html" }); return void res.end(readFileSync(WEB));
@@ -396,15 +403,9 @@ createServer(async (req, res) => {
     if (req.method === "GET" && url === "/api/auth") return json(200, { mode: readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none" });
     if (req.method === "GET" && url === "/agents") return json(200, Object.values(agents));
     if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5", b.profile ? clean(b.profile) : undefined));
-    if (req.method === "POST" && url === "/dm") { // sync agent->agent (or user->agent) DM; returns the reply
+    if (req.method === "POST" && url === "/dm") { // the human (UI/CLI) talking to an agent; agents use the authenticated agent listener
       if (!agents[b.to]) return json(404, { error: `no agent ${b.to}` });
-      const from = b.from ?? "user";
-      if (from === "user") {
-        const c = convs[`dm:${b.to}`]; post(c, "user", b.text); return json(200, { reply: await deliver(c, b.to) });
-      }
-      const id = `dm:${[from, b.to].sort().join("+")}`;
-      const c = ensureConv(id, "dm", `${[from, b.to].sort().join(" ↔ ")}`, [b.to]); emit({ type: "state" });
-      post(c, from, b.text); return json(200, { reply: await deliver(c, b.to) });
+      const c = convs[`dm:${b.to}`]; post(c, "user", b.text); return json(200, { reply: await deliver(c, b.to) });
     }
     if ((m = url.match(/^\/agents\/([^/]+)\/log$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/log"));
     if ((m = url.match(/^\/agents\/([^/]+)\/health$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/healthz"));
@@ -413,7 +414,7 @@ createServer(async (req, res) => {
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e instanceof Error ? e.message : e) }); }
-}).listen(Number(process.env.PORT ?? 8080), process.env.ORCIE_HOST ?? "127.0.0.1", () => console.log(`orcie server up on ${process.env.ORCIE_HOST ?? "127.0.0.1"}:${process.env.PORT ?? 8080}`));
+}).listen(UI_PORT, process.env.ORCIE_HOST ?? "127.0.0.1", () => console.log(`orcie server up on ${process.env.ORCIE_HOST ?? "127.0.0.1"}:${process.env.PORT ?? 8080}`));
 
 // Private token-authenticated API for a trusted remote client over Tailscale (docs/PRIVATE_API.md).
 startPrivateApi({
@@ -421,3 +422,11 @@ startPrivateApi({
   busy: (id) => (active.get(id) ?? 0) > 0 || [...running].some((k) => k.startsWith(id + "|")),
   authMode: () => (readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none"),
 });
+
+async function agentDm(from: string, to: string, text: string) { // sync agent->agent DM; `from` comes from the caller's token
+  if (!agents[to]) throw new Error(`no agent ${to}`);
+  const id = `dm:${[from, to].sort().join("+")}`;
+  const c = ensureConv(id, "dm", `${[from, to].sort().join(" ↔ ")}`, [to]); emit({ type: "state" });
+  post(c, from, text); return deliver(c, to);
+}
+startAgentApi({ port: AGENT_PORT, host: process.env.ORCIE_HOST ?? "127.0.0.1", secret: SECRET, agentNames: () => Object.keys(agents), dm: agentDm });

@@ -2,5 +2,5 @@
   "name": "orcie",
   "private": true,
   "workspaces": ["server", "harness"],
-  "scripts": { "build": "npm run build --workspaces", "dev:server": "npm run dev -w server" }
+  "scripts": { "build": "npm run build --workspaces", "dev:server": "npm run dev -w server", "test": "node --experimental-strip-types --test server/test/*.test.ts" }
 }
