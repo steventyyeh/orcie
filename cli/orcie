@@ -19,6 +19,24 @@ case "$1" in
   add-external) j -X POST "$S/agents/external" -d "$(enc name="$2")" ;;
   recreate) j -X POST "$S/api/agents/$2/recreate" ;;
   recreate-all) for a in $(curl -s "$S/agents" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).forEach(a=>console.log(a.name)))'); do echo -n "$a: "; j -X POST "$S/api/agents/$a/recreate" | head -c 80; echo; done ;;
-  rm) j -X DELETE "$S/agents/$2" ;;
-  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | log <agent> | shell <agent> | search <text> | doctor | add-external <name> | link-tmux <name> <session> | tmux-sessions | recreate <agent> | recreate-all | rm <agent>"; exit 1 ;;
+  rm) # lay off: deletes the container and volume, keeps all conversation history; asks you to type the name unless --yes
+    [ -n "$2" ] || { echo "usage: orcie rm <agent> [--yes]"; exit 1; }
+    if [ "$3" != "--yes" ]; then printf 'This removes agent "%s" (container, volume, room membership). Conversation history is kept.\nType the agent name to confirm: ' "$2"; read -r ans; [ "$ans" = "$2" ] || { echo "cancelled"; exit 1; }; fi
+    j -X DELETE "$S/agents/$2?confirm=$2" ;;
+  check) # in-container checks: tools, auth, browser, GitHub, image, server reachability
+    curl -s "$S/api/check${2:+?agent=$2}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);let bad=0;for(const a of j.agents){console.log(a.agent+(a.ok?"  OK":"  PROBLEMS"));for(const c of a.checks){if(!c.ok)bad++;console.log("  "+(c.ok?"ok  ":"FAIL")+" "+c.name.padEnd(10)+c.detail)}}process.exit(bad?1:0)})' ;;
+  stats) curl -s "$S/api/stats" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log("agent".padEnd(14)+"kind".padEnd(10)+"busy".padEnd(6)+"convs".padEnd(7)+"sent".padEnd(7)+"promises".padEnd(10)+"cpu".padEnd(9)+"memory");for(const a of j.agents)console.log(a.name.padEnd(14)+a.kind.padEnd(10)+String(a.busy).padEnd(6)+String(a.conversations).padEnd(7)+String(a.messagesSent).padEnd(7)+String(a.activePromises).padEnd(10)+String(a.cpu??"-").padEnd(9)+(a.memory??"-"))})' ;;
+  logs) docker logs --tail "${3:-100}" "orcie-$2" ;;
+  attach) # chat with an agent from the terminal (Ctrl-D to leave)
+    [ -n "$2" ] || { echo "usage: orcie attach <agent>"; exit 1; }; echo "chatting with $2 (Ctrl-D to leave)"
+    while printf '%s> ' "you"; IFS= read -r line; do [ -z "$line" ] && continue; echo "...thinking"; curl -s -X POST "$S/dm" -H 'content-type: application/json' -d "$(enc to="$2" text="$line")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log("\n"+"'"$2"'"+"> "+(j.reply??j.error??"(no reply)")+"\n")})'; done; echo ;;
+  promises) curl -s "$S/api/promises${2:+?agent=$2}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).promises.forEach(p=>console.log(`#${p.id} ${p.agent} [${p.status}] ${p.text}`)))' ;;
+  restart) # restart agent processes; waits until the agent is idle unless --force
+    force=0; names=(); for a in "${@:2}"; do [ "$a" = "--force" ] && force=1 || names+=("$a"); done
+    if [ "${names[0]}" = "--all" ] || [ ${#names[@]} -eq 0 ]; then names=($(curl -s "$S/agents" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).filter(a=>!a.kind||a.kind==="claude").forEach(a=>console.log(a.name)))')); fi
+    for a in "${names[@]}"; do
+      if [ $force -eq 0 ]; then n=0; while curl -s "$S/api/activity" | grep -q "\"agent\":\"$a\""; do [ $n -eq 0 ] && echo "$a is busy, waiting (use --force to restart now)..."; n=$((n+1)); [ $n -gt 360 ] && { echo "$a still busy after 30 min, skipping"; continue 2; }; sleep 5; done; fi
+      echo -n "$a: "; j -X POST "$S/api/agents/$a/restart" -d '{}'
+    done ;;
+  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | log <agent> | shell <agent> | search <text> | doctor | add-external <name> | link-tmux <name> <session> | tmux-sessions | recreate <agent> | recreate-all | rm <agent> [--yes] | check [agent] | stats | logs <agent> [n] | attach <agent> | restart [agent... | --all] [--force] | promises [agent]"; exit 1 ;;
 esac

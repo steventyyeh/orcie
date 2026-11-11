@@ -11,6 +11,19 @@ case "$(basename "$0")" in
     call /rooms/read "$(node -e 'console.log(JSON.stringify({room:process.argv[1],limit:Number(process.argv[2])||30}))' "$1" "$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
   browser_help) [ $# -ge 1 ] || { echo 'usage: browser_help "<what you need the human to do in the browser>"' >&2; exit 1; }
     call /browser/request "$(node -e 'console.log(JSON.stringify({reason:process.argv[1]}))' "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
+  promise) sub="${1:-list}"; [ $# -ge 1 ] && shift
+    case "$sub" in
+      add) [ $# -ge 1 ] || { echo 'usage: promise add "<what you promised>"' >&2; exit 1; }; body="$(node -e 'console.log(JSON.stringify({text:process.argv[1]}))' "$*")"; ep=/promises/add ;;
+      list) body="$(node -e 'console.log(JSON.stringify({status:process.argv[1]||"active"}))' "$1")"; ep=/promises/list ;;
+      done|cancel) [ $# -ge 1 ] || { echo "usage: promise $sub <id> [note]" >&2; exit 1; }; id="$1"; shift; st=$sub; [ "$sub" = cancel ] && st=cancelled; body="$(node -e 'console.log(JSON.stringify({id:Number(process.argv[1]),status:process.argv[2],note:process.argv[3]||undefined}))' "$id" "$st" "$*")"; ep=/promises/update ;;
+      *) echo 'usage: promise add "<text>" | promise list [active|done|cancelled|all] | promise done <id> [note] | promise cancel <id> [note]' >&2; exit 1 ;;
+    esac
+    call "$ep" "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
+  share_file) [ $# -ge 1 ] && [ -f "$1" ] || { echo 'usage: share_file <path> ["caption"]' >&2; exit 1; }
+    f="$1"; shift; body="$(node -e 'const fs=require("fs"),p=require("path");const f=process.argv[1];console.log(JSON.stringify({name:p.basename(f),data:fs.readFileSync(f).toString("base64"),caption:process.argv[2]||""}))' "$f" "$*")"
+    printf '%s' "$body" | curl -s --max-time 300 -X POST "${ORCIE_SERVER:-http://host.docker.internal:8081}/files/upload" -H 'content-type: application/json' -H "Authorization: Bearer ${ORCIE_AGENT_TOKEN}" -H "X-Orcie-Conversation: ${ORCIE_CONVERSATION}" --data-binary @- | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
+  fetch_file) [ $# -ge 1 ] || { echo 'usage: fetch_file <id> [save-as-path]' >&2; exit 1; }
+    call /files/get "$(node -e 'console.log(JSON.stringify({id:process.argv[1]}))' "$1")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(j.error){console.log("error: "+j.error);process.exit(1)}const fs=require("fs"),p=require("path");const dest=process.argv[1]||p.join("/data/workspace/files",j.name);fs.mkdirSync(p.dirname(dest),{recursive:true});fs.writeFileSync(dest,Buffer.from(j.dataBase64,"base64"));console.log("saved to "+dest)})' "$2" ;;
   send_message) [ $# -ge 2 ] || { echo 'usage: send_message "<user | #room | agent>" "<text>"' >&2; exit 1; }
     t="$1"; shift
     call /send_message "$(node -e 'console.log(JSON.stringify({to:process.argv[1],text:process.argv[2]}))' "$t" "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;

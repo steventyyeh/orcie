@@ -16,7 +16,9 @@ export function openDb(path: string) {
   `);
   // External (bridged) agents: no container; they poll an inbox over the private API. Columns added in place for existing databases.
   for (const col of ["kind text not null default 'claude'", "last_seen text", "last_reply text"]) { try { db.exec(`alter table agents add column ${col}`); } catch { /* already there */ } }
-  for (const ddl of ["alter table messages add column addr text", "alter table conversations add column meta text"]) { try { db.exec(ddl); } catch { /* already there */ } }
+  for (const ddl of ["alter table messages add column addr text", "alter table conversations add column meta text", "alter table messages add column files text"]) { try { db.exec(ddl); } catch { /* already there */ } }
+  db.exec("create table if not exists promises (id integer primary key autoincrement, agent text not null, text text not null, conv text, status text not null default 'active', note text, created text not null, updated text not null)");
+  db.exec("create table if not exists files (id text primary key, name text not null, size integer not null, type text not null, by text not null, at text not null)");
   db.exec("create table if not exists memstate (agent text not null, conv text not null, at text not null, hash text not null, primary key (agent, conv))");
   db.exec("create table if not exists pending (agent text not null, conv text not null, primary key (agent, conv))");
   const q = (sql: string) => db.prepare(sql);
@@ -39,13 +41,21 @@ export function openDb(path: string) {
       for (const r of q("select * from conversations order by created").all() as any[]) convs[r.id] = { id: r.id, kind: r.kind, title: r.title, mode: r.mode ?? undefined, members: [], messages: [], cursor: {}, ...(r.meta ? JSON.parse(r.meta) : {}) };
       for (const r of q("select * from members").all() as any[]) convs[r.conv]?.members.push(r.name);
       for (const r of q("select * from messages order by conv, seq").all() as any[])
-        convs[r.conv]?.messages.push({ seq: r.seq, from: r.sender, text: r.text, at: r.at, ...(r.hop != null ? { hop: r.hop } : {}), ...(r.activity ? { activity: JSON.parse(r.activity) } : {}), ...(r.addr ? JSON.parse(r.addr) : {}) });
+        convs[r.conv]?.messages.push({ seq: r.seq, from: r.sender, text: r.text, at: r.at, ...(r.hop != null ? { hop: r.hop } : {}), ...(r.activity ? { activity: JSON.parse(r.activity) } : {}), ...(r.addr ? JSON.parse(r.addr) : {}), ...(r.files ? { files: JSON.parse(r.files) } : {}) });
       for (const r of q("select * from cursors").all() as any[]) if (convs[r.conv]) convs[r.conv].cursor[r.agent] = r.seq;
       return { agents, convs };
     },
     putAgent: (a: any) => void putAgent.run(a.name, a.model, a.container, a.created, a.profile ? JSON.stringify(a.profile) : null, a.kind ?? 'claude', a.lastSeen ?? null, a.lastReply ?? null),
     memGet: (agent: string, conv: string) => (q("select at, hash from memstate where agent = ? and conv = ?").get(agent, conv) as { at: string; hash: string } | undefined) ?? null,
     memSet: (agent: string, conv: string, at: string, hash: string) => void q("insert into memstate (agent, conv, at, hash) values (?, ?, ?, ?) on conflict(agent, conv) do update set at = excluded.at, hash = excluded.hash").run(agent, conv, at, hash),
+    delMember: (conv: string, name: string) => void q("delete from members where conv = ? and name = ?").run(conv, name),
+    delMemstate: (agent: string) => void q("delete from memstate where agent = ?").run(agent),
+    addPromise: (agent: string, text: string, conv: string | null, note: string | null) => { const now = new Date().toISOString(); return Number(q("insert into promises (agent, text, conv, status, note, created, updated) values (?, ?, ?, 'active', ?, ?, ?)").run(agent, text, conv, note, now, now).lastInsertRowid); },
+    listPromises: (agent?: string, status?: string) => q(`select * from promises where (? is null or agent = ?) and (? is null or status = ?) order by id desc limit 500`).all(agent ?? null, agent ?? null, status ?? null, status ?? null) as any[],
+    getPromise: (id: number) => (q("select * from promises where id = ?").get(id) as any) ?? null,
+    setPromise: (id: number, status: string, note: string | null) => void q("update promises set status = ?, note = coalesce(?, note), updated = ? where id = ?").run(status, note, new Date().toISOString(), id),
+    addFile: (f: { id: string; name: string; size: number; type: string; by: string }) => void q("insert into files (id, name, size, type, by, at) values (?, ?, ?, ?, ?, ?)").run(f.id, f.name, f.size, f.type, f.by, new Date().toISOString()),
+    getFile: (id: string) => (q("select * from files where id = ?").get(id) as any) ?? null,
     addPending: (agent: string, conv: string) => void q('insert or ignore into pending (agent, conv) values (?, ?)').run(agent, conv),
     delPending: (agent: string, conv: string) => void q('delete from pending where agent = ? and conv = ?').run(agent, conv),
     loadPending: () => (q('select agent, conv from pending').all() as any[]),
@@ -53,6 +63,7 @@ export function openDb(path: string) {
     putConv: (c: any) => tx(() => { putConv.run(c.id, c.kind, c.title, c.mode ?? null, new Date().toISOString()); for (const m of c.members) addMember.run(c.id, m); if (c.origin || c.async) q("update conversations set meta = ? where id = ?").run(JSON.stringify({ ...(c.origin ? { origin: c.origin } : {}), ...(c.async ? { async: true } : {}) }), c.id); }),
     addMsg: (conv: string, m: any) => tx(() => {
       addMsg.run(conv, m.seq, m.from, m.text, m.at, m.hop ?? null, m.activity ? JSON.stringify(m.activity) : null);
+      if (m.files) q("update messages set files = ? where conv = ? and seq = ?").run(JSON.stringify(m.files), conv, m.seq);
       if (m.to || m.mentions) q("update messages set addr = ? where conv = ? and seq = ?").run(JSON.stringify({ ...(m.to ? { to: m.to } : {}), ...(m.mentions ? { mentions: m.mentions } : {}) }), conv, m.seq);
       if (m.from !== "system") addFts.run(m.text, conv, m.seq, m.from);
     }),

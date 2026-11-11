@@ -47,6 +47,13 @@ button{font:inherit;color:inherit;cursor:pointer}
 .btn.stop{border-color:var(--danger,#c0392b);color:var(--danger,#c0392b)}
 .hsel{flex:0 0 auto;width:auto;max-width:150px;height:30px;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);font-size:13px;padding:0 var(--s2)}
 
+.fld{width:100%;box-sizing:border-box;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);padding:var(--s2) var(--s3);font:inherit;font-size:14px}
+textarea.fld{resize:vertical;min-height:64px}
+dialog.wide{width:min(640px,94vw)}dialog.wide form{max-height:86vh;overflow:auto}
+.prow{display:flex;gap:var(--s3);align-items:flex-start;padding:var(--s2) 0;border-bottom:1px solid var(--line);font-size:14px}.prow .t{flex:1}.prow .t.done{color:var(--faint);text-decoration:line-through}.prow .st{font-size:11px;font-weight:600;text-transform:uppercase;color:var(--mute)}
+#chips{display:flex;flex-wrap:wrap;gap:var(--s2);padding:var(--s2) var(--s3) 0}#chips:empty{display:none}
+.fchip{display:inline-flex;align-items:center;gap:var(--s2);padding:3px 8px;border-radius:var(--r2);border:1px solid var(--line-strong);font-size:12px;background:var(--hover)}.fchip button{border:0;background:none;cursor:pointer;color:var(--mute);padding:0}
+.files{display:flex;flex-wrap:wrap;gap:var(--s2);margin-top:var(--s2)}.files a.fchip{text-decoration:none;color:var(--fg)}.files img{max-height:160px;max-width:320px;border-radius:var(--r2);border:1px solid var(--line)}
 /* live browser, picture-in-picture */
 #pip{position:fixed;right:var(--s5);bottom:var(--s5);width:520px;height:420px;min-width:320px;min-height:260px;max-width:96vw;max-height:92vh;z-index:60;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--r3,10px);box-shadow:0 8px 32px rgba(0,0,0,.28);resize:both;overflow:hidden}
 #pip.max{inset:var(--s4);width:auto;height:auto;resize:none}
@@ -286,9 +293,11 @@ dialog.xl #wiz{display:flex;flex-direction:column;height:100%;overflow:hidden}
   <div id="comp" class="off">
     <div class="pop" id="mpop"></div>
     <textarea id="txt" rows="1" placeholder="Message" disabled></textarea>
+    <div id="chips"></div>
     <div class="bar">
       <button class="iconbtn" data-wrap="**" title="Bold" aria-label="Bold"><svg class="ic"><use href="#i-bold"/></svg></button>
       <button class="iconbtn" data-wrap="`" title="Code" aria-label="Code"><svg class="ic"><use href="#i-code"/></svg></button>
+      <button class="iconbtn" id="attb" title="Attach a file" aria-label="Attach a file"><svg class="ic"><use href="#i-plus"/></svg></button><input type="file" id="fileIn" multiple hidden>
       <button class="iconbtn" id="atb" title="Mention an agent" aria-label="Mention an agent"><svg class="ic"><use href="#i-at"/></svg></button>
       <div class="sp"></div><span class="hint"><kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</span>
       <button class="sendb" id="send" disabled aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
@@ -326,6 +335,20 @@ dialog.xl #wiz{display:flex;flex-direction:column;height:100%;overflow:hidden}
   <label class="l">Replies</label><select id="rMode"><option value="parallel">All agents reply at once (faster)</option><option value="sequential">One at a time, each sees earlier replies</option></select>
   <div class="acts"><button type="button" class="btn" onclick="roomDlg.close()">Cancel</button><button class="btn p">Create room</button></div>
 </form></dialog>
+
+<dialog id="profDlg" class="wide"><form id="profForm" method="dialog">
+  <h3 id="profTitle">Edit profile</h3><p class="sub">Changes to the role, skills, team and manager apply right away. Tools and resources apply after a recreate.</p>
+  <label class="l">Role</label><input class="fld" id="pRole" maxlength="80">
+  <label class="l">Summary</label><input class="fld" id="pSummary" maxlength="400">
+  <label class="l">Team</label><input class="fld" id="pTeam" maxlength="60">
+  <label class="l">Manager</label><select class="fld" id="pManager"></select>
+  <label class="l">Description</label><textarea class="fld" id="pDesc" maxlength="600" rows="2"></textarea>
+  <label class="l">Responsibilities (one per line)</label><textarea class="fld" id="pResp" rows="3"></textarea>
+  <label class="l">Instructions</label><textarea class="fld" id="pPrompt" rows="6"></textarea>
+  <label class="l">Always remember</label><textarea class="fld" id="pSeed" rows="3"></textarea>
+  <div class="acts"><button type="button" class="btn" onclick="profDlg.close()">Cancel</button><button class="btn p" id="profSave">Save</button></div>
+</form></dialog>
+<dialog id="promDlg" class="wide"><form method="dialog"><h3 id="promTitle">Promises</h3><p class="sub">Commitments this agent made to people. You can close them too.</p><div id="promList"></div><div class="acts"><button class="btn">Close</button></div></form></dialog>
 
 <script>
 try { const t = localStorage.orcieTheme || (matchMedia("(prefers-color-scheme: dark)").matches ? "graphite" : ""); if (t) document.documentElement.dataset.theme = t; } catch {}
@@ -439,6 +462,12 @@ function drawHeader() {
     const bb = document.createElement("button"); bb.className = "btn sm"; bb.textContent = "Browser"; bb.title = "Watch this agent's browser live; take control when needed"; bb.onclick = () => openPip(agent.name);
     h.append(sel, rb, bb);
   }
+  if (!room && !ro && agent) { // Manage: HR profile, promises, lay off
+    const w = document.createElement("div"); w.className = "relpop"; w.innerHTML = `<button class="btn sm">Manage</button>`;
+    w.firstChild.onclick = (e) => { e.stopPropagation(); if (w.querySelector(".pop")) return closePops(); closePops(); const p = document.createElement("div"); p.className = "pop"; p.dataset.pop = "1"; p.style.cssText = "top:36px;right:0;min-width:160px";
+      [["Edit profile", () => editProfile(agent)], ["Promises", () => showPromises(agent.name)], ["Remove agent", () => removeAgent(agent.name)]].forEach(([t, fn]) => { const x = document.createElement("div"); x.className = "row"; x.textContent = t; x.onclick = () => { closePops(); fn(); }; p.append(x); }); w.append(p); };
+    h.append(w);
+  }
   if (!room) return;
   const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
   st.innerHTML = `<span class="avs">${conv.members.slice(0, 4).map((m) => av(m, "xs")).join("")}</span><span>${conv.members.length} member${conv.members.length === 1 ? "" : "s"}</span>`; h.append(st);
@@ -469,6 +498,7 @@ function msgNode(m, prev, newFrom) {
   const grouped = prev && prev.from === m.from && new Date(prev.at).toDateString() === d.toDateString() && d - new Date(prev.at) < 5 * 60e3 && newFrom !== m.seq;
   const x = document.createElement("div"); x.dataset.seq = m.seq; x.style.setProperty("--h", hue(m.from)); x.className = "m" + (grouped ? "" : " first") + (m.text.startsWith("failed") ? " err" : "");
   x.innerHTML = (grouped ? `<div class="gut">${hm(d)}</div>` : av(m.from, "md")) + `<div class="main">${grouped ? "" : `<div><span class="who">${esc(label(m.from))}</span><span class="when">${hm(d)}</span></div>`}<div class="body">${md(m.text)}</div></div>`;
+  if (m.files?.length) x.querySelector(".main").append(filesEl(m.files));
   if (m.activity?.length) x.querySelector(".main").append(actEl(m.activity, `${ic("tool")}<span>${m.activity.filter((i) => i.name !== "say").length ? `${m.activity.filter((i) => i.name !== "say").length} tool call${m.activity.filter((i) => i.name !== "say").length > 1 ? "s" : ""}` : "Work log"}</span>${ic("caret", "chev")}`, false));
   f.append(x); return f;
 }
@@ -499,7 +529,7 @@ async function open(id, focusSeq) {
   const newFrom = conv.messages.find((m) => m.seq > (readAt[id] ?? 0) && m.from !== "user" && m.from !== "system")?.seq ?? null;
   const ro = false; $("comp").classList.toggle("off", ro); $("txt").disabled = ro;
   $("txt").placeholder = id.includes("+") ? "Post here to resume a paused agent conversation" : conv.kind === "room" ? `Message #${conv.title}. Use @name to address one agent.` : `Message ${conv.title}`;
-  txt.value = drafts[id] ?? ""; renderAll(newFrom); drawLive(); drawHeader(); markRead(); updSend(); if (!ro) txt.focus();
+  txt.value = drafts[id] ?? ""; drawChips(); renderAll(newFrom); drawLive(); drawHeader(); markRead(); updSend(); if (!ro) txt.focus();
   $("jump").style.display = "none";
   if (focusSeq) { const el = sc.querySelector(`[data-seq="${focusSeq}"]`); if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); } }
 }
@@ -519,6 +549,46 @@ function drawLive() {
   if (stick) sc.scrollTop = sc.scrollHeight;
 }
 const addNode = (node) => sc.append(node);
+
+// ---- HR profile editing, promises, lay off ----
+function editProfile(agent) {
+  const p = agent.profile || {}; $("profTitle").textContent = `Edit profile: ${agent.name}`;
+  $("pRole").value = p.role || ""; $("pSummary").value = p.summary || ""; $("pTeam").value = p.team || ""; $("pDesc").value = p.description || ""; $("pResp").value = (p.responsibilities || []).join("\n");
+  $("pPrompt").value = p.systemPrompt || ""; $("pSeed").value = p.memorySeed || "";
+  $("pManager").innerHTML = `<option value="">(none)</option>` + state.agents.filter((a) => a.name !== agent.name).map((a) => `<option value="${esc(a.name)}" ${a.name === p.manager ? "selected" : ""}>${esc(a.name)}</option>`).join("");
+  $("profForm").onsubmit = async (ev) => { ev.preventDefault();
+    try { const r = await api(`/agents/${encodeURIComponent(agent.name)}/profile`, "POST", { profile: { role: $("pRole").value, summary: $("pSummary").value, team: $("pTeam").value, manager: $("pManager").value, description: $("pDesc").value, responsibilities: $("pResp").value, systemPrompt: $("pPrompt").value, memorySeed: $("pSeed").value } });
+      profDlg.close(); toast(r.needsRecreate ? "Saved. Tool or resource changes apply after a recreate." : "Profile saved"); await refresh(); drawHeader(); } catch (err) { toast(err.message); } };
+  profDlg.showModal();
+}
+async function showPromises(name) {
+  $("promTitle").textContent = `Promises: ${name}`; const box = $("promList");
+  const draw = async () => { const { promises } = await api(`/promises?agent=${encodeURIComponent(name)}`); box.innerHTML = promises.length ? "" : '<div class="prow"><div class="t">No promises yet.</div></div>';
+    promises.forEach((p) => { const d = document.createElement("div"); d.className = "prow"; d.innerHTML = `<div class="t ${p.status !== "active" ? "done" : ""}">${esc(p.text)}${p.note ? `<div class="st">${esc(p.note)}</div>` : ""}</div><span class="st">${p.status}</span>`;
+      const mk = (label, st) => { const b = document.createElement("button"); b.type = "button"; b.className = "btn sm"; b.textContent = label; b.onclick = async () => { await api(`/promises/${p.id}`, "POST", { status: st }); draw(); }; d.append(b); };
+      if (p.status === "active") { mk("Done", "done"); mk("Cancel", "cancelled"); } else mk("Reopen", "active"); box.append(d); }); };
+  await draw(); promDlg.showModal();
+}
+async function removeAgent(name) {
+  const t = prompt(`Remove ${name}? This deletes its container and volume and removes it from every room. Conversation history is kept.\n\nType the agent name to confirm:`);
+  if (t !== name) { if (t !== null) toast("Name did not match; nothing removed"); return; }
+  try { await api(`/agents/${encodeURIComponent(name)}?confirm=${encodeURIComponent(name)}`, "DELETE"); toast(`${name} removed`); await refresh(); const first = state.conversations[0]; if (first) open(first.id); } catch (err) { toast(err.message); }
+}
+
+// ---- attachments ----
+const pendingFiles = {}; // conversation id -> [{id, name, size}]
+const kb = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+function drawChips() { const box = $("chips"); box.innerHTML = ""; (pendingFiles[cur] || []).forEach((f, i) => { const c = document.createElement("span"); c.className = "fchip"; c.innerHTML = `${esc(f.name)} (${kb(f.size)})`; const x = document.createElement("button"); x.type = "button"; x.textContent = "x"; x.setAttribute("aria-label", "Remove attachment"); x.onclick = () => { pendingFiles[cur].splice(i, 1); drawChips(); updSend(); }; c.append(x); box.append(c); }); }
+$("attb").onclick = () => $("fileIn").click();
+$("fileIn").onchange = async () => {
+  const id = cur; for (const f of $("fileIn").files) {
+    if (f.size > 25 * 1048576) { toast(`${f.name} is larger than 25 MB`); continue; }
+    try { const data = await new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).split(",")[1]); rd.onerror = rej; rd.readAsDataURL(f); });
+      const ref = await api("/files", "POST", { name: f.name, data }); (pendingFiles[id] ||= []).push(ref); } catch (err) { toast(err.message); } }
+  $("fileIn").value = ""; if (id === cur) { drawChips(); updSend(); }
+};
+const filesEl = (files) => { const w = document.createElement("div"); w.className = "files"; files.forEach((f) => { const a = document.createElement("a"); a.className = "fchip"; a.href = `/api/files/${f.id}`; a.download = f.name; a.textContent = `${f.name} (${kb(f.size)})`; w.append(a);
+  if (/\.(png|jpe?g|gif|webp)$/i.test(f.name)) { const im = document.createElement("img"); im.src = `/api/files/${f.id}?inline=1`; im.alt = f.name; im.loading = "lazy"; w.append(im); } }); return w; };
 
 // ---- live browser panel (picture-in-picture): watch the agent's browser, take control, hand it back ----
 let pip = null;
@@ -583,10 +653,10 @@ function pipEvent(e) {
 
 // ---- composer ----
 const txt = $("txt");
-const updSend = () => { $("send").disabled = !txt.value.trim() || !cur; txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 240) + "px"; };
+const updSend = () => { $("send").disabled = (!txt.value.trim() && !(pendingFiles[cur] || []).length) || !cur; txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 240) + "px"; };
 async function submit() {
-  const text = txt.value.trim(); if (!text || !cur) return; txt.value = ""; saveDraft(); updSend(); hideMention();
-  try { await api(`/conversations/${encodeURIComponent(cur)}/messages`, "POST", { text }); } catch (err) { toast(err.message); txt.value = text; saveDraft(); updSend(); }
+  const text = txt.value.trim(), files = pendingFiles[cur] || []; if ((!text && !files.length) || !cur) return; txt.value = ""; pendingFiles[cur] = []; drawChips(); saveDraft(); updSend(); hideMention();
+  try { await api(`/conversations/${encodeURIComponent(cur)}/messages`, "POST", { text, files: files.map((f) => f.id) }); } catch (err) { toast(err.message); txt.value = text; pendingFiles[cur] = files; drawChips(); saveDraft(); updSend(); }
 }
 $("send").onclick = submit;
 document.querySelectorAll("[data-wrap]").forEach((b) => (b.onclick = () => { const w = b.dataset.wrap, s = txt.selectionStart, e = txt.selectionEnd;

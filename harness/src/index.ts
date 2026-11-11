@@ -2,6 +2,8 @@ import { createServer } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { browserHttp, startBrowser } from "./browser.ts";
+import { applyRole } from "./role.ts";
+import { timingSafeEqual } from "node:crypto";
 
 // Per-agent harness: runs the Claude CLI headless, one turn per message, one resumable session per conversation.
 // Subscription login only; never an Anthropic API key.
@@ -58,6 +60,12 @@ const body = async (req: AsyncIterable<Buffer>) => { let r = ""; for await (cons
 createServer(async (req, res) => {
   const json = (code: number, b: unknown) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(b)); };
   try {
+    // Every endpoint except the health check needs this agent's own token (held by the orcie server and by this container), so
+    // other containers on the Docker network cannot message, cancel or reconfigure this agent. /browser/* does its own check.
+    if (req.url !== "/healthz" && !req.url?.startsWith("/browser/")) {
+      const t = /^Bearer (\S+)$/.exec(req.headers.authorization ?? "")?.[1], want = process.env.ORCIE_AGENT_TOKEN;
+      if (!t || !want || t.length !== want.length || !timingSafeEqual(Buffer.from(t), Buffer.from(want))) return json(403, { error: "forbidden" });
+    }
     if (req.url?.startsWith("/browser/") && await browserHttp(req, res, req.method === "POST" ? await body(req) : {})) return;
     if (req.url === "/healthz") return json(200, { ok: true, conversations: Object.keys(sessions) });
     if (req.url === "/log") return json(200, { log: existsSync(LOG) ? readFileSync(LOG, "utf8").trim().split("\n").slice(-20).map((l) => JSON.parse(l)) : [] });
@@ -76,6 +84,12 @@ createServer(async (req, res) => {
         out({ kind: "done", conversation, ...r });
       } catch (e) { out({ kind: "error", error: String(e) }); }
       return void res.end();
+    }
+    if (req.method === "POST" && req.url === "/profile") { // the orcie server re-applies an edited HR profile (role header, skills, memory seed)
+      const t = /^Bearer (\S+)$/.exec(req.headers.authorization ?? "")?.[1], want = process.env.ORCIE_AGENT_TOKEN;
+      if (!t || !want || t.length !== want.length || !timingSafeEqual(Buffer.from(t), Buffer.from(want))) return json(403, { error: "forbidden" });
+      const { profile } = await body(req); if (!profile?.role) return json(400, { error: "profile.role required" });
+      applyRole(profile, process.env.HOME!); return json(200, { applied: true });
     }
     if (req.method === "POST" && req.url === "/cancel") { // stop what is running and drop everything queued
       epoch++; let n = 0; for (const p of procs) { (p as any).cancel?.(); n++; }

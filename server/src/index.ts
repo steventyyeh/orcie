@@ -1,19 +1,20 @@
 import { createServer, type ServerResponse } from "node:http";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, renameSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, renameSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
 import { openDb } from "./db.ts";
 import { startPrivateApi } from "./private-api.ts";
+import { cleanProfile, managerError, validName, validModel, NAME_RE, type Profile } from "./profile.ts";
 import { tmpdir } from "node:os";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // Control plane (POC): agents are Docker containers; conversations/rooms are persisted in a JSON file.
 // Router rule (docs/DESIGN.md §6): a conversation's messages reach every agent member's session for that conversation.
-type Skill = { name: string; description: string; instructions: string };
-type Profile = { role: string; summary: string; systemPrompt: string; tools: { browser: boolean }; skills: Skill[]; memorySeed: string; resources: keyof typeof PRESETS; greeting?: string };
 type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; kind?: "claude" | "external" | "tmux"; lastSeen?: string; lastReply?: string };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
-type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number; to?: string[]; mentions?: string[] };
+type FileRef = { id: string; name: string; size: number };
+type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number; to?: string[]; mentions?: string[]; files?: FileRef[] };
 type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential"; origin?: string; async?: boolean };
 
 // Orcie is subscription-only (Claude CLI login). Anthropic API credentials are never used: drop them so nothing inherits them.
@@ -48,7 +49,7 @@ const docker = (...a: string[]) => execFileSync("docker", a, { encoding: "utf8",
 const hostPort = (c: string) => Number(docker("port", c, "9090/tcp").split("\n")[0].split(":").pop()); // port changes on restart
 // Streams one turn from the agent's harness (NDJSON), reporting tool use via onEvent; resolves with the reply.
 async function turn(a: Agent, body: unknown, onEvent: (e: any) => void): Promise<string> {
-  const r = await fetch(`http://127.0.0.1:${hostPort(a.container)}/send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(body as object), model: a.model }), signal: AbortSignal.timeout(900_000) }); // model is per turn, so it can change without recreating the container
+  const r = await fetch(`http://127.0.0.1:${hostPort(a.container)}/send`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${agentToken(SECRET, a.name)}` }, body: JSON.stringify({ ...(body as object), model: a.model }), signal: AbortSignal.timeout(900_000) }); // model is per turn, so it can change without recreating the container
   const dec = new TextDecoder(); let buf = "", reply: string | null = null;
   const line = (l: string) => { if (!l.trim()) return; const e = JSON.parse(l); if (e.kind === "done") reply = e.reply; else if (e.kind === "error") throw new Error(e.error); else onEvent(e); };
   for await (const chunk of r.body as any) { buf += dec.decode(chunk, { stream: true }); let i; while ((i = buf.indexOf("\n")) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); } }
@@ -58,7 +59,7 @@ async function turn(a: Agent, body: unknown, onEvent: (e: any) => void): Promise
 }
 const summarize = (input: any) => { const v = input?.command ?? input?.file_path ?? input?.url ?? input?.pattern ?? input?.path ?? input?.prompt ?? JSON.stringify(input ?? {}); return String(v).slice(0, 300); };
 const harness = async (a: Agent, path: string, init?: RequestInit) =>
-  (await fetch(`http://127.0.0.1:${hostPort(a.container)}${path}`, { ...init, signal: AbortSignal.timeout(900_000) })).json();
+  (await fetch(`http://127.0.0.1:${hostPort(a.container)}${path}`, { ...init, headers: { ...(init?.headers as object), authorization: `Bearer ${agentToken(SECRET, a.name)}` }, signal: AbortSignal.timeout(900_000) })).json();
 
 // ---- live events (SSE) ----
 const clients = new Set<ServerResponse>();
@@ -94,7 +95,6 @@ function recreateAgent(name: string) { // new container on the same volume (memo
   return a;
 }
 const MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"];
-const validModel = (m: unknown): m is string => typeof m === "string" && /^claude-[a-z0-9.-]{1,40}$/.test(m);
 // Stop: cancel the running turn(s), drop everything queued, and mark what the agent has not read yet as handled.
 async function cancelAgent(name: string) {
   const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
@@ -119,9 +119,36 @@ function setModel(name: string, model: unknown) { // live: the harness gets the 
   if (!validModel(model)) throw new Error("invalid model name");
   a.model = model; db.putAgent(a); emit({ type: "state" }); return { name, model };
 }
+// Lay off an agent: its container and volume are deleted and it leaves every room, but all conversation history stays
+// (messages, rooms, the DM). Its long-term notes are archived, not deleted.
+function removeAgent(name: string) {
+  const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
+  epochs.set(name, epochOf(name) + 1);
+  if (a.kind !== "external" && a.kind !== "tmux") { try { docker("rm", "-f", a.container); } catch { /* already gone */ } try { docker("volume", "rm", "-f", `orcie-${name}-data`); } catch { /* none */ } }
+  for (const c of Object.values(convs)) if (c.kind === "room" && c.members.includes(name)) { c.members = c.members.filter((n) => n !== name); db.delMember(c.id, name); post(c, "system", `${name} was removed from the team.`); }
+  for (const k of [...dirty]) if (k.endsWith(`|${name}`)) dirty.delete(k);
+  pending.delete(name); db.delAgent(name); db.delMemstate(name); delete agents[name];
+  let archived: string | null = null;
+  const nd = `${NOTES_DIR}/${name}`;
+  if (existsSync(nd)) { archived = `${NOTES_DIR}/_retired/${name}-${Date.now()}`; mkdirSync(`${NOTES_DIR}/_retired`, { recursive: true, mode: 0o700 }); renameSync(nd, archived); }
+  journal.rebuild(Object.values(convs)); emit({ type: "state" });
+  return { deleted: name, volumeRemoved: a.kind !== "external" && a.kind !== "tmux", notesArchivedTo: archived };
+}
+// Edit an agent's HR profile after hiring. Role text, skills, team/manager etc. apply immediately; tools and resources need a recreate.
+async function editProfile(name: string, incoming: any) {
+  const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
+  const old = a.profile ?? cleanProfile({ role: "Assistant" });
+  const next = cleanProfile({ ...old, ...incoming });
+  const err = managerError(name, next.manager, (n) => agents[n]?.profile?.manager, (n) => !!agents[n]); if (err) throw new Error(err);
+  a.profile = next; db.putAgent(a);
+  if (a.kind !== "external" && a.kind !== "tmux") { try { const r = await hbrowser(a, "/profile", "POST", { profile: next }); if (!r.ok) throw new Error(String(r.status)); } catch (e) { throw new Error(`saved, but the agent could not apply it right now (${String((e as Error).message ?? e)}); restart the agent to re-apply`); } }
+  emit({ type: "state" });
+  return { profile: next, needsRecreate: next.tools.browser !== old.tools.browser || next.resources !== old.resources };
+}
 function createAgent(name: string, model: string, profile?: Profile) {
-  if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
+  if (!validName(name)) throw new Error("name must be lowercase letters/digits/dashes");
   if (agents[name]) throw new Error(`agent ${name} exists`);
+  if (profile) { const err = managerError(name, profile.manager, (n) => agents[n]?.profile?.manager, (n) => !!agents[n]); if (err) throw new Error(err); }
   const container = runContainer(name, model, profile);
   agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(profile ? { profile } : {}) };
   db.putAgent(agents[name]);
@@ -138,9 +165,24 @@ function ensureConv(id: string, kind: Conv["kind"], title: string, members: stri
   return convs[id];
 }
 const journal = new Journal(); journal.rebuild(Object.values(convs)); // long-term memory: derived from stored history on every start
-const notes = new Notes(process.env.ORCIE_MEMORY_DIR ?? `${process.env.HOME}/.orcie/memory`);
-function post(c: Conv, from: string, text: string, activity?: Item[], hop?: number) {
-  const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}), ...(hop !== undefined ? { hop } : {}) };
+const FILES_DIR = process.env.ORCIE_FILES_DIR ?? `${process.env.HOME}/.orcie/files`;
+const MAX_FILE = 25 * 1024 * 1024;
+const IMAGE_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+function saveFile(name: unknown, b64: unknown, by: string): FileRef {
+  const clean = String(name ?? "file").split(/[\\/]/).pop()!.replace(/[\\/\u0000-\u001f]/g, "_").replace(/^\.+/, "").slice(0, 120) || "file";
+  const data = Buffer.from(String(b64 ?? ""), "base64"); if (!data.length) throw new Error("empty file");
+  if (data.length > MAX_FILE) throw new Error(`file too large (max ${MAX_FILE / 1024 / 1024} MB)`);
+  const id = randomBytes(12).toString("hex"); mkdirSync(FILES_DIR, { recursive: true, mode: 0o700 }); writeFileSync(`${FILES_DIR}/${id}`, data, { mode: 0o600 });
+  db.addFile({ id, name: clean, size: data.length, type: IMAGE_TYPES[clean.split(".").pop()!.toLowerCase()] ?? "application/octet-stream", by });
+  return { id, name: clean, size: data.length };
+}
+const fileRefs = (ids: unknown): FileRef[] => (Array.isArray(ids) ? ids : []).slice(0, 10).map((id) => db.getFile(String(id))).filter(Boolean).map((f: any) => ({ id: f.id, name: f.name, size: f.size }));
+// An agent may read a file only if it is attached to a message in a conversation the agent takes part in (or it uploaded it).
+const agentCanRead = (who: string, id: string) => db.getFile(id)?.by === who || Object.values(convs).some((c) => participants(c).includes(who) && c.messages.some((m) => m.files?.some((f) => f.id === id)));
+const NOTES_DIR = process.env.ORCIE_MEMORY_DIR ?? `${process.env.HOME}/.orcie/memory`;
+const notes = new Notes(NOTES_DIR);
+function post(c: Conv, from: string, text: string, activity?: Item[], hop?: number, files?: FileRef[]) {
+  const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}), ...(hop !== undefined ? { hop } : {}), ...(files?.length ? { files } : {}) };
   if (c.kind === "room" && from !== "system") { // who this message is for (saved so the UI and the recipients can tell asked from mentioned)
     const a = addressed(text, c.members.filter((n) => n !== from), !agents[from]);
     if (a.broadcast) m.to = ["@here"]; else if (a.asked.length) m.to = a.asked;
@@ -153,7 +195,7 @@ function post(c: Conv, from: string, text: string, activity?: Item[], hop?: numb
 // Deliver everything the agent hasn't seen in this conversation, run a turn, post the reply.
 // In rooms, if new messages land while the agent is drafting, the draft is held and the agent re-reads everything
 // (pass 2) before posting a revised reply or staying silent, so it never answers without having taken in the latest.
-const fmtMsgs = (ms: Msg[]) => ms.map((m) => `[${m.from}] ${m.text}`).join("\n");
+const fmtMsgs = (ms: Msg[]) => ms.map((m) => `[${m.from}] ${m.text}${m.files?.length ? `\n[Attachments: ${m.files.map((f) => `${f.name} (${f.size} bytes, id ${f.id})`).join(", ")}. Fetch one with: fetch_file <id> [save-as-path]]` : ""}`).join("\n");
 // ---- external (bridged) agents, e.g. Muse ----
 // No container and no Claude: messages addressed to them wait in an inbox that the bridge client polls over the private
 // API (docs/PRIVATE_API.md); replies are posted back as that agent. Online/offline comes from the client's last request.
@@ -205,7 +247,7 @@ function workingExternal(name: string, conv: string, on: boolean) { // lets the 
   if (on) workTimers.set(k, setTimeout(() => { workTimers.delete(k); emit({ type: "typing", conv, agent: name, on: false }); }, 120_000));
 }
 function createExternalAgent(name: string) {
-  if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
+  if (!validName(name)) throw new Error("name must be lowercase letters/digits/dashes");
   if (agents[name]) throw new Error(`agent ${name} exists`);
   agents[name] = { name, model: "external", container: "", port: 0, created: new Date().toISOString(), kind: "external" }; db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
@@ -214,7 +256,7 @@ function createExternalAgent(name: string) {
 }
 
 function createTmuxAgent(name: string, session: string) {
-  if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
+  if (!validName(name)) throw new Error("name must be lowercase letters/digits/dashes");
   if (agents[name]) throw new Error(`agent ${name} exists`);
   tmuxBridge.checkLinkable(session);
   if (Object.values(agents).some((a) => a.kind === "tmux" && a.container === session)) throw new Error(`session ${session} is already linked`);
@@ -284,7 +326,8 @@ async function deliverInner(c: Conv, agent: string): Promise<string | null> {
           : `While you were drafting, new messages arrived:\n${text}\n\nYour unposted draft was:\n${draft}\n\nTaking everything now said into account, reply with your final message (revise your draft, or drop whatever has already been covered), or reply exactly NO_REPLY if it is now redundant.`;
       }
       if (note) text += `\n\n${note}`;
-      const cutoff = new Date().toISOString(), n = notes.read(agent);
+      const open = db.listPromises(agent, "active").reverse(), cutoff = new Date().toISOString();
+      const n = [notes.read(agent), open.length ? `Your open promises (commitments you made; close them with: promise done <id>):\n${open.map((p: any) => `#${p.id} ${p.text}`).join("\n")}` : ""].filter(Boolean).join("\n\n");
       const mem = memoryBlock({ agent, conv: c, incoming: unseen.map((m) => m.text).join("\n"), notes: n, journal, state: db.memGet(agent, c.id) });
       if (mem) text = `${mem}\n\n${text}`;
       reply = (await turn(agents[agent], { from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conversation: c.id }, onEvent)).trim();
@@ -368,18 +411,13 @@ function route(c: Conv, m: Msg) {
 
 // ---- onboarding (Agent HR) ----
 // A tool-less Claude call interviews the manager about the agent's purpose, then drafts the profile.
-const clean = (p: any): Profile => ({
-  role: String(p.role ?? "Assistant").slice(0, 80), summary: String(p.summary ?? "").slice(0, 400),
-  systemPrompt: String(p.systemPrompt ?? "").slice(0, 8000), tools: { browser: p.tools?.browser !== false },
-  skills: (Array.isArray(p.skills) ? p.skills : []).slice(0, 6).map((s: any) => ({ name: String(s.name ?? "skill").slice(0, 40), description: String(s.description ?? "").slice(0, 300), instructions: String(s.instructions ?? "").slice(0, 6000) })),
-  memorySeed: String(p.memorySeed ?? "").slice(0, 4000), resources: p.resources in PRESETS ? p.resources : "standard", greeting: p.greeting ? String(p.greeting).slice(0, 400) : undefined,
-});
+const clean = cleanProfile;
 const hrPrompt = (name: string, model: string, history: { role: string; text: string }[], current: Profile | null) =>
   `You are the HR onboarding specialist for an AI-agent platform. Each agent is a Claude CLI instance in its own Docker container with a shell, file access, persistent memory, an optional headless-browser tool (Playwright), and optional skills (SKILL.md playbooks). You are co-designing the configuration of a new agent named "${name}" (model ${model}) with the manager, through an ongoing conversation. You maintain a draft profile that the manager sees live next to the chat.
 
 Each turn:
 1. Reply to the manager in 1-4 short sentences: either ask ONE clarifying question (purpose, typical tasks, systems/sites/tools, tone, boundaries, what success looks like), or say concretely what you changed and why. Do not repeat the whole profile in the chat.
-2. As soon as you can propose anything (after the first answer at the latest), or whenever you change something, end your reply with the COMPLETE updated profile in one \`\`\`json block with keys: role (short title), summary (one sentence), systemPrompt (markdown instructions to the agent in second person: duties, workflow, tone, boundaries), tools ({"browser": boolean}), skills (0-5 items of {name (kebab-case), description (when to use it), instructions (markdown steps)}), memorySeed (markdown facts the agent should always remember), resources ("small" | "standard" | "large"), greeting (one sentence the agent says when introduced). Omit the block only while you still know nothing about the agent's purpose.
+2. As soon as you can propose anything (after the first answer at the latest), or whenever you change something, end your reply with the COMPLETE updated profile in one \`\`\`json block with keys: role (short title), summary (one sentence), systemPrompt (markdown instructions to the agent in second person: duties, workflow, tone, boundaries), tools ({"browser": boolean}), skills (0-5 items of {name (kebab-case), description (when to use it), instructions (markdown steps)}), memorySeed (markdown facts the agent should always remember), resources ("small" | "standard" | "large"), greeting (one sentence the agent says when introduced), team (team name, only if mentioned), manager (an existing agent it reports to, only if mentioned), responsibilities (0-8 short strings), description (one short paragraph for the agent directory). Omit the block only while you still know nothing about the agent's purpose.
 3. The manager may edit the profile by hand between turns. The current profile below is the source of truth: keep their edits unless they ask you to change them.
 
 Current profile: ${current ? JSON.stringify(current) : "(none yet)"}
@@ -437,7 +475,9 @@ const uiServer = createServer(async (req, res) => {
     }
     if ((m = url.match(/^\/api\/conversations\/([^/]+)\/messages$/)) && req.method === "POST") {
       const c = convs[decodeURIComponent(m[1])]; if (!c) return json(404, { error: "no such conversation" });
-      const msg = post(c, "user", String(b.text ?? ""), undefined, 0); route(c, msg); return json(202, msg);
+      const files = fileRefs(b.files), text = String(b.text ?? "");
+      if (!text.trim() && !files.length) return json(400, { error: "empty message" });
+      const msg = post(c, "user", text || "(attachment)", undefined, 0, files); route(c, msg); return json(202, msg);
     }
     if (req.method === "GET" && url === "/api/search") {
       const q = new URL(req.url!, "http://x").searchParams.get("q") ?? ""; return json(200, { results: db.search(q) });
@@ -480,6 +520,26 @@ const uiServer = createServer(async (req, res) => {
     }
     if (req.method === "GET" && url === "/api/auth") return json(200, { mode: readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none" });
     if (req.method === "GET" && url === "/agents") return json(200, Object.values(agents));
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/profile$/)) && req.method === "POST") {
+      if (!agents[m[1]]) return json(404, { error: "no such agent" });
+      try { return json(200, await editProfile(m[1], b.profile ?? b)); } catch (e) { return json(400, { error: String(e instanceof Error ? e.message : e) }); }
+    }
+    if (req.method === "POST" && url === "/api/files") { try { return json(201, saveFile(b.name, b.data, "user")); } catch (e) { return json(400, { error: String(e instanceof Error ? e.message : e) }); } }
+    if ((m = url.match(/^\/api\/files\/([0-9a-f]{24})$/)) && req.method === "GET") {
+      const f = db.getFile(m[1]); if (!f || !existsSync(`${FILES_DIR}/${f.id}`)) return json(404, { error: "no such file" });
+      const inline = new URL(req.url!, "http://x").searchParams.has("inline") && f.type !== "application/octet-stream"; // only known image types are ever shown inline
+      res.writeHead(200, { "content-type": inline ? f.type : "application/octet-stream", "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.name)}`, "x-content-type-options": "nosniff", "content-security-policy": "sandbox", "cache-control": "private, max-age=3600" });
+      return void res.end(readFileSync(`${FILES_DIR}/${f.id}`));
+    }
+    if (req.method === "GET" && url === "/api/promises") { const q = new URL(req.url!, "http://x").searchParams; return json(200, { promises: db.listPromises(q.get("agent") ?? undefined, q.get("status") ?? undefined) }); }
+    if ((m = url.match(/^\/api\/promises\/(\d+)$/)) && req.method === "POST") { // the human can close or reopen an agent's commitment
+      const p = db.getPromise(Number(m[1])); if (!p) return json(404, { error: "no such promise" });
+      if (!["active", "done", "cancelled"].includes(b.status)) return json(400, { error: "status must be active, done or cancelled" });
+      db.setPromise(p.id, b.status, b.note ? String(b.note).slice(0, 500) : null); emit({ type: "promises", agent: p.agent }); return json(200, db.getPromise(p.id));
+    }
+    if (req.method === "GET" && url === "/api/activity") return json(200, { busy: [...inflight].filter(([, v]) => v.size).map(([agent, v]) => ({ agent, conversations: [...v] })) });
+    if (req.method === "GET" && url === "/api/stats") return json(200, await fleetStats());
+    if (req.method === "GET" && url === "/api/check") { const only = new URL(req.url!, "http://x").searchParams.get("agent"); return json(200, { agents: await Promise.all(Object.values(agents).filter((a) => a.kind !== "external" && a.kind !== "tmux" && (!only || a.name === only)).map((a) => checkAgent(a))) }); }
     if (req.method === "GET" && url === "/api/models") return json(200, { models: MODELS });
     if ((m = url.match(/^\/api\/agents\/([^/]+)\/(cancel|restart|model)$/)) && req.method === "POST") {
       if (!agents[m[1]]) return json(404, { error: "no such agent" });
@@ -492,8 +552,9 @@ const uiServer = createServer(async (req, res) => {
     }
     if ((m = url.match(/^\/agents\/([^/]+)\/log$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/log"));
     if ((m = url.match(/^\/agents\/([^/]+)\/health$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/healthz"));
-    if (req.method === "DELETE" && (m = url.match(/^\/agents\/([^/]+)$/)) && agents[m[1]]) {
-      if (!isExternal(m[1]) && !isTmux(m[1])) docker("rm", "-f", agents[m[1]].container); pending.delete(m[1]); db.delAgent(m[1]); delete agents[m[1]]; emit({ type: "state" }); return json(200, { deleted: m[1] });
+    if (req.method === "DELETE" && (m = url.match(/^\/(?:api\/)?agents\/([^/]+)$/)) && agents[m[1]]) { // lay off: needs the agent's name as confirmation
+      if (new URL(req.url!, "http://x").searchParams.get("confirm") !== m[1]) return json(400, { error: `confirmation required: repeat the agent's name (?confirm=${m[1]})` });
+      return json(200, removeAgent(m[1]));
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e instanceof Error ? e.message : e) }); }
@@ -565,6 +626,19 @@ async function agentExtra(who: string, method: string, url: string, b: any, orig
       finally { browserWaiting.delete(who); }
     } catch (e) { return { code: 503, body: { error: String(e.message ?? e) } }; }
   }
+  if (url === "/files/upload" && method === "POST") { // the agent shares a file in the conversation its turn belongs to
+    const c = origin ? convs[origin] : undefined; if (!c || !participants(c).includes(who)) return { code: 400, body: { error: "no conversation to share into (this works from inside a conversation turn)" } };
+    try { const f = saveFile(b.name, b.data, who); route(c, post(c, who, String(b.caption ?? "").slice(0, 2000) || f.name, undefined, undefined, [f])); return { code: 200, body: { text: `shared ${f.name} (${f.size} bytes) in ${c.id}` } }; } catch (e) { return { code: 400, body: { error: String(e.message ?? e) } }; } }
+  if (url === "/files/get") { const id = String(b.id ?? ""), f = /^[0-9a-f]{24}$/.test(id) ? db.getFile(id) : null;
+    if (!f || !existsSync(`${FILES_DIR}/${id}`) || !agentCanRead(who, id)) return { code: 404, body: { error: "no such file that you can read" } };
+    return { code: 200, body: { name: f.name, dataBase64: readFileSync(`${FILES_DIR}/${id}`).toString("base64") } }; }
+  if (url === "/promises/add") { const t = String(b.text ?? "").trim().slice(0, 500); if (!t) return { code: 400, body: { error: "text required" } };
+    const id = db.addPromise(who, t, origin && convs[origin] && participants(convs[origin]).includes(who) ? origin : null, b.note ? String(b.note).slice(0, 500) : null); emit({ type: "promises", agent: who }); return { code: 200, body: { text: `promise #${id} recorded` } }; }
+  if (url === "/promises/list") { const st = b.status ? String(b.status) : "active"; const rows = db.listPromises(who, st === "all" ? undefined : st);
+    return { code: 200, body: { text: rows.length ? rows.map((p: any) => `#${p.id} [${p.status}] ${p.text}${p.conv ? ` (from ${p.conv})` : ""}${p.note ? ` - ${p.note}` : ""}`).join("\n") : "(no promises)" } }; }
+  if (url === "/promises/update") { const p = db.getPromise(Number(b.id)); if (!p || p.agent !== who) return { code: 404, body: { error: "no such promise of yours" } };
+    if (!["active", "done", "cancelled"].includes(b.status)) return { code: 400, body: { error: "status must be active, done or cancelled" } };
+    db.setPromise(p.id, b.status, b.note ? String(b.note).slice(0, 500) : null); emit({ type: "promises", agent: who }); return { code: 200, body: { text: `promise #${p.id} marked ${b.status}` } }; }
   if (url === "/memory/remember") { try { notes.remember(who, String(b.text ?? "")); return { code: 200, body: { ok: true } }; } catch (e) { return { code: 400, body: { error: String(e.message ?? e) } }; } }
   if (url === "/memory/recall") {
     const q = String(b.query ?? ""), nl = notes.search(who, q), hits = journal.related(who, null, q, { k: 15 });
@@ -605,3 +679,43 @@ async function browserApi(name: string, action: string, method: string, b: any, 
     return send(200, out);
   } catch (e) { return send(503, { error: `browser unavailable: ${String(e).slice(0, 150)}` }); }
 }
+
+// ---- fleet operations: in-container checks, stats, keeping agents on the current image ----
+const dockerAsync = (...a: string[]) => new Promise<string>((resolve, reject) => execFile("docker", a, { encoding: "utf8", timeout: 20_000, env: process.env }, (e, out) => (e ? reject(e) : resolve(out.trim()))));
+async function checkAgent(a: Agent) {
+  const checks: { name: string; ok: boolean; detail: string }[] = [];
+  const add = (name: string, ok: boolean, detail = "") => checks.push({ name, ok, detail });
+  const sh = async (script: string) => dockerAsync("exec", a.container, "sh", "-c", script);
+  try { await dockerAsync("inspect", "-f", "{{.State.Running}}", a.container); } catch { add("container", false, "not running"); return { agent: a.name, ok: false, checks }; }
+  add("container", true, "running");
+  try { const img = await dockerAsync("inspect", "-f", "{{.Image}}", a.container), cur = await dockerAsync("image", "inspect", "-f", "{{.Id}}", IMAGE); add("image", img === cur, img === cur ? "current" : "outdated: run `orcie recreate " + a.name + "`"); } catch (e) { add("image", false, String(e).slice(0, 80)); }
+  const tools = ["claude", "node", "git", "gh", "playwright-mcp", "xdotool", "Xvfb", "x11vnc", "import", "remember", "recall", "read_room", "send_message", "promise", "share_file", "fetch_file", "browser_help", "orcie-dm"];
+  try { const out = await sh(`for t in ${tools.join(" ")}; do command -v $t >/dev/null || echo $t; done`); add("tools", !out, out ? `missing: ${out.split("\n").join(", ")}` : `${tools.length} present`); } catch (e) { add("tools", false, String(e).slice(0, 80)); }
+  try { const out = await sh('if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then echo token; elif [ -f "$HOME/.claude/.credentials.json" ]; then echo login-copy; else echo none; fi; claude --version 2>&1 | head -1'); const [mode, ver] = out.split("\n"); add("auth", mode !== "none", `${mode} (claude ${ver})`); } catch (e) { add("auth", false, String(e).slice(0, 80)); }
+  try { const st = await (await hbrowser(a, "/browser/state", "GET", undefined, 8000)).json() as any; if (st.control?.enabled === false) add("browser", true, "disabled by this agent's profile"); else add("browser", !!st.running, st.running ? `running (${st.url ?? "blank"})` : "not running"); } catch { add("browser", false, "harness unreachable"); }
+  try { const out = await sh('gh api user --jq .login 2>&1 | head -1'); add("github", /^[A-Za-z0-9-]+$/.test(out), out.slice(0, 60)); } catch { add("github", false, "no access"); }
+  try { const code = await sh('curl -s -o /dev/null -w "%{http_code}" --max-time 5 -X POST "$ORCIE_SERVER/dm" -H "content-type: application/json" -d "{}"'); add("orcie-api", code === "401" || code === "400", `agent API answered ${code}`); } catch { add("orcie-api", false, "cannot reach the server from the container"); }
+  return { agent: a.name, ok: checks.every((c) => c.ok), checks };
+}
+async function fleetStats() {
+  let docker_: Record<string, any> = {};
+  try { for (const l of (await dockerAsync("stats", "--no-stream", "--format", "{{json .}}")).split("\n").filter(Boolean)) { const j = JSON.parse(l); docker_[j.Name] = j; } } catch { /* docker unavailable */ }
+  return { agents: Object.values(agents).map((a) => {
+    const mine = Object.values(convs).filter((c) => participants(c).includes(a.name)), d = docker_[a.container] ?? null;
+    return { name: a.name, kind: a.kind ?? "claude", model: a.model, busy: (inflight.get(a.name)?.size ?? 0) > 0, conversations: mine.length, messagesSent: mine.reduce((n, c) => n + c.messages.filter((m) => m.from === a.name).length, 0),
+      activePromises: db.listPromises(a.name, "active").length, ...(d ? { cpu: d.CPUPerc, memory: d.MemUsage, memoryPct: d.MemPerc } : {}) };
+  }) };
+}
+// On startup, any container agent whose container is missing or built from an older image is recreated on its existing volume.
+async function ensureCurrentImage() {
+  if (process.env.ORCIE_AUTO_RECREATE === "0") return;
+  let cur = ""; try { cur = await dockerAsync("image", "inspect", "-f", "{{.Id}}", IMAGE); } catch { return; }
+  for (const a of Object.values(agents)) {
+    if (a.kind === "external" || a.kind === "tmux") continue;
+    let img = ""; try { img = await dockerAsync("inspect", "-f", "{{.Image}}", a.container); } catch { /* missing */ }
+    if (img === cur) continue;
+    try { console.log(`recreating ${a.name} (${img ? "image out of date" : "container missing"})`); recreateAgent(a.name); db.putAgent(a); } catch (e) { console.error(`could not recreate ${a.name}: ${e}`); }
+  }
+  emit({ type: "state" });
+}
+ensureCurrentImage().catch((e) => console.error("image check", e));

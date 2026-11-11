@@ -119,3 +119,63 @@ test("static noVNC is served, and path traversal is refused", async () => {
   assert.equal((await ui("/novnc/../../server/src/index.ts")).status, 404);
   assert.equal((await ui("/novnc/%2e%2e/%2e%2e/package.json")).status, 404);
 });
+
+// ---- P5: HR profile, promises, files, lay off, fleet endpoints
+const json = (path: string, method: string, body?: unknown) => ui(path, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+test("profile: HR fields are editable after hiring; unknown manager and reporting loops are refused", async () => {
+  await uiPost("/agents/external", { name: "pat" }); await uiPost("/agents/external", { name: "quin" });
+  const ok = await json("/api/agents/pat/profile", "POST", { profile: { role: "Reviewer", team: "Platform", description: "Reviews PRs", responsibilities: "review\nmerge", manager: "quin" } });
+  assert.equal(ok.status, 200); const b = await ok.json() as any; assert.equal(b.profile.team, "Platform"); assert.deepEqual(b.profile.responsibilities, ["review", "merge"]);
+  const st = await (await ui("/api/state")).json() as any; assert.equal(st.agents.find((a: any) => a.name === "pat").profile.manager, "quin");
+  assert.equal((await json("/api/agents/pat/profile", "POST", { profile: { manager: "ghost" } })).status, 400);
+  assert.equal((await json("/api/agents/quin/profile", "POST", { profile: { manager: "pat" } })).status, 400); // quin -> pat -> quin
+  assert.equal((await json("/api/agents/pat/profile", "POST", { profile: { manager: "pat" } })).status, 400);
+  assert.equal((await json("/api/agents/ghost/profile", "POST", { profile: {} })).status, 404);
+});
+test("promises: agents add, list and close their own; the human can close; others cannot touch them", async () => {
+  const add = await agentCall("pat", "/promises/add", { text: "ship the release notes" }); assert.match(add.body.text, /recorded/);
+  assert.match((await agentCall("pat", "/promises/list", {})).body.text, /ship the release notes/);
+  const id = Number(/#(\d+)/.exec(add.body.text)![1]);
+  assert.equal((await agentCall("quin", "/promises/update", { id, status: "done" })).status, 404); // not quin's promise
+  assert.equal((await agentCall("pat", "/promises/update", { id, status: "nonsense" })).status, 400);
+  assert.match((await agentCall("pat", "/promises/update", { id, status: "done", note: "sent" })).body.text, /done/);
+  assert.match((await agentCall("pat", "/promises/list", {})).body.text, /no promises/); // only active ones by default
+  assert.match((await agentCall("pat", "/promises/list", { status: "all" })).body.text, /\[done\].*sent/);
+  assert.equal((await json(`/api/promises/${id}`, "POST", { status: "active" })).status, 200); // the human reopens it
+  const list = await (await ui("/api/promises?agent=pat&status=active")).json() as any; assert.equal(list.promises.length, 1);
+  assert.equal((await json("/api/promises/999999", "POST", { status: "done" })).status, 404);
+});
+test("files: upload, attach, download; downloads are never rendered as active content; agents only read files from their conversations", async () => {
+  const data = Buffer.from("hello file").toString("base64");
+  const up = await uiPost("/api/files", { name: "../../notes.txt", data }); assert.ok(/^[0-9a-f]{24}$/.test(up.id)); assert.ok(!up.name.includes("/")); assert.equal(up.size, 10);
+  assert.equal((await json("/api/files", "POST", { name: "x", data: "" })).status, 400);
+  const dl = await ui(`/api/files/${up.id}`); assert.equal(dl.status, 200); assert.equal(dl.headers.get("content-type"), "application/octet-stream"); assert.match(dl.headers.get("content-disposition")!, /^attachment/); assert.equal(dl.headers.get("x-content-type-options"), "nosniff"); assert.equal(await dl.text(), "hello file");
+  const html = await uiPost("/api/files", { name: "page.html", data: Buffer.from("<script>1</script>").toString("base64") });
+  const h = await ui(`/api/files/${html.id}?inline=1`); assert.equal(h.headers.get("content-type"), "application/octet-stream"); // inline is only for known image types
+  const png = await uiPost("/api/files", { name: "a.png", data: Buffer.from("x").toString("base64") }); assert.equal((await ui(`/api/files/${png.id}?inline=1`)).headers.get("content-type"), "image/png");
+  assert.equal((await ui("/api/files/zzzz")).status, 404); assert.equal((await ui("/api/files/" + "0".repeat(24))).status, 404);
+  const room = await uiPost("/api/rooms", { title: "files-room", members: ["pat"], mode: "parallel" });
+  const msg = await uiPost(`/api/conversations/${encodeURIComponent(room.id)}/messages`, { text: "see attached", files: [up.id, "bogus"] }); assert.deepEqual(msg.files.map((f: any) => f.id), [up.id]);
+  assert.equal((await agentCall("pat", "/files/get", { id: up.id })).body.name, "notes.txt"); // pat is in that room
+  assert.equal((await agentCall("quin", "/files/get", { id: up.id })).status, 404);          // quin is not
+  const shared = await agentCall("pat", "/files/upload", { name: "report.md", data: Buffer.from("# r").toString("base64"), caption: "here" }, { "x-orcie-conversation": room.id }); assert.match(shared.body.text, /shared report.md/);
+  const last = (await conv(room.id)).messages.at(-1); assert.equal(last.from, "pat"); assert.equal(last.files[0].name, "report.md");
+  assert.equal((await agentCall("pat", "/files/upload", { name: "x", data: "eA==" })).status, 400); // no conversation context
+});
+test("lay off: needs the name as confirmation, removes the agent from rooms, keeps the history", async () => {
+  await uiPost("/agents/external", { name: "rex" });
+  const room = await uiPost("/api/rooms", { title: "layoff", members: ["rex", "pat"], mode: "parallel" });
+  await uiPost(`/api/conversations/${encodeURIComponent(room.id)}/messages`, { text: "rex remember this" });
+  assert.equal((await ui("/api/agents/rex", { method: "DELETE", headers: { "content-type": "application/json" } })).status, 400);
+  assert.equal((await ui("/api/agents/rex?confirm=pat", { method: "DELETE", headers: { "content-type": "application/json" } })).status, 400);
+  assert.equal((await ui("/api/agents/rex?confirm=rex", { method: "DELETE", headers: { "content-type": "application/json" } })).status, 200);
+  const st = await (await ui("/api/state")).json() as any; assert.ok(!st.agents.some((a: any) => a.name === "rex"));
+  const c = await conv(room.id); assert.deepEqual(c.members, ["pat"]); assert.ok(c.messages.some((m: any) => m.text === "rex remember this")); assert.ok(c.messages.some((m: any) => /rex was removed/.test(m.text)));
+  assert.equal((await conv("dm:rex")).id, "dm:rex"); // the DM history is kept
+  assert.equal((await agentCall("rex", "/memory/recall", { query: "x" })).status, 401); // its token no longer works
+});
+test("fleet endpoints: activity, stats and check answer without Docker agents", async () => {
+  assert.deepEqual(((await (await ui("/api/activity")).json()) as any).busy, []);
+  const stats = await (await ui("/api/stats")).json() as any; assert.ok(stats.agents.some((a: any) => a.name === "pat" && a.kind === "external"));
+  assert.deepEqual(((await (await ui("/api/check")).json()) as any).agents, []); // only container agents are checked
+});

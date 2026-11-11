@@ -23,7 +23,7 @@ COPY bin/orcie-vncpipe /usr/local/bin/orcie-vncpipe
 COPY bin/git-credential-orcie /usr/local/bin/git-credential-orcie
 COPY bin/gh-wrapper /usr/local/bin/gh
 COPY entrypoint.sh /entrypoint.sh
-RUN ln -s /usr/local/bin/orcie-tool /usr/local/bin/remember && ln -s /usr/local/bin/orcie-tool /usr/local/bin/recall && ln -s /usr/local/bin/orcie-tool /usr/local/bin/read_room && ln -s /usr/local/bin/orcie-tool /usr/local/bin/send_message && ln -s /usr/local/bin/orcie-tool /usr/local/bin/browser_help \
+RUN ln -s /usr/local/bin/orcie-tool /usr/local/bin/remember && ln -s /usr/local/bin/orcie-tool /usr/local/bin/recall && ln -s /usr/local/bin/orcie-tool /usr/local/bin/read_room && ln -s /usr/local/bin/orcie-tool /usr/local/bin/send_message && ln -s /usr/local/bin/orcie-tool /usr/local/bin/browser_help && ln -s /usr/local/bin/orcie-tool /usr/local/bin/promise && ln -s /usr/local/bin/orcie-tool /usr/local/bin/share_file && ln -s /usr/local/bin/orcie-tool /usr/local/bin/fetch_file \
  && chmod +x /usr/local/bin/orcie-tool /usr/local/bin/orcie-vncpipe /usr/local/bin/orcie-dm /usr/local/bin/git-credential-orcie /usr/local/bin/gh /entrypoint.sh \
     && git config --system credential.helper orcie \
     && git config --system url."https://github.com/".insteadOf git@github.com: \

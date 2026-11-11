@@ -42,6 +42,20 @@ grep -q "orcie-send-message" /data/workspace/CLAUDE.md || cat >> /data/workspace
 ## Messaging other conversations
 `send_message "<user | #room | agent>" "<text>"` posts to the user (their DM with you), to a room you are in, or to another agent, without waiting for a reply. `orcie-dm <agent> "<text>"` asks an agent and waits for the answer. When a DM was started from a room, report the result back there. If an agent chain pauses with a "Paused fan-out" notice, stop and tell the user instead of retrying.
 EOM
+# Files (appended once).
+grep -q "orcie-files" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.md <<'EOM'
+
+<!-- orcie-files -->
+## Files
+Messages can carry attachments; the message text lists them with an id. `fetch_file <id> [path]` saves one into your workspace (default /data/workspace/files/). `share_file <path> ["caption"]` posts a file of yours into the current conversation so the user and the others can download it.
+EOM
+# Promises (appended once).
+grep -q "orcie-promises" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.md <<'EOM'
+
+<!-- orcie-promises -->
+## Promises
+When you commit to doing something for someone, record it: `promise add "<what you promised>"`. Your open promises are shown to you in every conversation. When you have delivered, run `promise done <id>` (or `promise cancel <id>` if it no longer applies). `promise list [all]` shows them.
+EOM
 # Live browser (appended once).
 grep -q "orcie-browser" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.md <<'EOM'
 
