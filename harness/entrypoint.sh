@@ -35,6 +35,13 @@ Orcie keeps a journal of every conversation you take part in and adds a "Long-te
 - `recall "<what to look for>"` searches your notes and the full history of all your conversations.
 - `read_room "<#room | dm:name | id>" [count]` reads the latest messages of one of your conversations.
 EOM
+# Messaging beyond the current conversation (appended once).
+grep -q "orcie-send-message" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.md <<'EOM'
+
+<!-- orcie-send-message -->
+## Messaging other conversations
+`send_message "<user | #room | agent>" "<text>"` posts to the user (their DM with you), to a room you are in, or to another agent, without waiting for a reply. `orcie-dm <agent> "<text>"` asks an agent and waits for the answer. When a DM was started from a room, report the result back there. If an agent chain pauses with a "Paused fan-out" notice, stop and tell the user instead of retrying.
+EOM
 # Apply onboarding profile (role, skills, tools, memory) and register tools.
 node /app/src/apply-profile.ts
 exec node /app/src/index.ts

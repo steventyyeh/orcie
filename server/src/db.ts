@@ -16,6 +16,7 @@ export function openDb(path: string) {
   `);
   // External (bridged) agents: no container; they poll an inbox over the private API. Columns added in place for existing databases.
   for (const col of ["kind text not null default 'claude'", "last_seen text", "last_reply text"]) { try { db.exec(`alter table agents add column ${col}`); } catch { /* already there */ } }
+  for (const ddl of ["alter table messages add column addr text", "alter table conversations add column meta text"]) { try { db.exec(ddl); } catch { /* already there */ } }
   db.exec("create table if not exists memstate (agent text not null, conv text not null, at text not null, hash text not null, primary key (agent, conv))");
   db.exec("create table if not exists pending (agent text not null, conv text not null, primary key (agent, conv))");
   const q = (sql: string) => db.prepare(sql);
@@ -35,10 +36,10 @@ export function openDb(path: string) {
     loadAll() {
       const agents: Record<string, any> = {}, convs: Record<string, any> = {};
       for (const r of q("select * from agents").all() as any[]) agents[r.name] = { name: r.name, model: r.model, container: r.container, port: 0, created: r.created, kind: r.kind ?? 'claude', ...(r.last_seen ? { lastSeen: r.last_seen } : {}), ...(r.last_reply ? { lastReply: r.last_reply } : {}), ...(r.profile ? { profile: JSON.parse(r.profile) } : {}) };
-      for (const r of q("select * from conversations order by created").all() as any[]) convs[r.id] = { id: r.id, kind: r.kind, title: r.title, mode: r.mode ?? undefined, members: [], messages: [], cursor: {} };
+      for (const r of q("select * from conversations order by created").all() as any[]) convs[r.id] = { id: r.id, kind: r.kind, title: r.title, mode: r.mode ?? undefined, members: [], messages: [], cursor: {}, ...(r.meta ? JSON.parse(r.meta) : {}) };
       for (const r of q("select * from members").all() as any[]) convs[r.conv]?.members.push(r.name);
       for (const r of q("select * from messages order by conv, seq").all() as any[])
-        convs[r.conv]?.messages.push({ seq: r.seq, from: r.sender, text: r.text, at: r.at, ...(r.hop != null ? { hop: r.hop } : {}), ...(r.activity ? { activity: JSON.parse(r.activity) } : {}) });
+        convs[r.conv]?.messages.push({ seq: r.seq, from: r.sender, text: r.text, at: r.at, ...(r.hop != null ? { hop: r.hop } : {}), ...(r.activity ? { activity: JSON.parse(r.activity) } : {}), ...(r.addr ? JSON.parse(r.addr) : {}) });
       for (const r of q("select * from cursors").all() as any[]) if (convs[r.conv]) convs[r.conv].cursor[r.agent] = r.seq;
       return { agents, convs };
     },
@@ -49,9 +50,10 @@ export function openDb(path: string) {
     delPending: (agent: string, conv: string) => void q('delete from pending where agent = ? and conv = ?').run(agent, conv),
     loadPending: () => (q('select agent, conv from pending').all() as any[]),
     delAgent: (name: string) => void q("delete from agents where name = ?").run(name),
-    putConv: (c: any) => tx(() => { putConv.run(c.id, c.kind, c.title, c.mode ?? null, new Date().toISOString()); for (const m of c.members) addMember.run(c.id, m); }),
+    putConv: (c: any) => tx(() => { putConv.run(c.id, c.kind, c.title, c.mode ?? null, new Date().toISOString()); for (const m of c.members) addMember.run(c.id, m); if (c.origin || c.async) q("update conversations set meta = ? where id = ?").run(JSON.stringify({ ...(c.origin ? { origin: c.origin } : {}), ...(c.async ? { async: true } : {}) }), c.id); }),
     addMsg: (conv: string, m: any) => tx(() => {
       addMsg.run(conv, m.seq, m.from, m.text, m.at, m.hop ?? null, m.activity ? JSON.stringify(m.activity) : null);
+      if (m.to || m.mentions) q("update messages set addr = ? where conv = ? and seq = ?").run(JSON.stringify({ ...(m.to ? { to: m.to } : {}), ...(m.mentions ? { mentions: m.mentions } : {}) }), conv, m.seq);
       if (m.from !== "system") addFts.run(m.text, conv, m.seq, m.from);
     }),
     setCursor: (conv: string, agent: string, seq: number) => void setCur.run(conv, agent, seq),

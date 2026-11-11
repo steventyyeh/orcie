@@ -43,6 +43,9 @@ button{font:inherit;color:inherit;cursor:pointer}
 .btn:hover{background:var(--hover)}
 .btn.p{background:var(--accent);border-color:var(--accent);color:#fff}.btn.p:hover{filter:brightness(.92)}
 .btn.sm{height:30px;padding:0 var(--s3);font-size:13px}
+.tool.say{font-style:italic;color:var(--faint);white-space:pre-wrap}
+.btn.stop{border-color:var(--danger,#c0392b);color:var(--danger,#c0392b)}
+.hsel{height:30px;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);font-size:13px;padding:0 var(--s2)}
 .btn:disabled{opacity:.5;cursor:not-allowed;filter:none}
 .iconbtn{width:32px;height:32px;display:grid;place-items:center;border-radius:var(--r1);border:0;background:transparent;color:var(--mute);transition:background .12s}
 .iconbtn:hover{background:var(--card);color:var(--fg)}
@@ -396,17 +399,28 @@ async function refresh() { state = await api("/state"); drawNav(); drawHeader();
 // ---- header ----
 function drawHeader() {
   const h = $("hdr"); if (!conv) return;
-  const c = state.conversations.find((x) => x.id === cur), ro = cur.includes("+"), room = conv.kind === "room";
+  const c = state.conversations.find((x) => x.id === cur), ro = cur.includes("+"), room = conv.kind === "room"; // ro = agent<->agent DM
   const members = room ? conv.members : (ro ? conv.title.split(" \u2194 ") : [conv.members[0]]);
   const working = members.filter((m) => typing[cur]?.[m]);
   const agent = state.agents.find((a) => a.name === members[0]);
   const ago = (iso) => { const s = (Date.now() - Date.parse(iso)) / 1000; return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
   const ext = agent?.kind === "tmux" ? [`Mac tmux session ${agent.session}`, agent.online ? "running" : "session not running", agent.lastReply ? `last reply ${ago(agent.lastReply)}` : "no reply yet"].join(", ") : agent?.kind === "external" ? ["External agent", agent.online ? "online" : agent.lastSeen ? `offline, last seen ${ago(agent.lastSeen)}` : "offline", agent.lastReply ? `last reply ${ago(agent.lastReply)}` : "no reply yet", agent.waiting ? `${agent.waiting} waiting` : ""].filter(Boolean).join(", ") : "";
   const sub = ext ? ext : working.length ? `${working.join(", ")} working`
-    : room ? "" : ro ? "Read-only" : ["Active", agent?.profile?.role, agent?.model.replace("claude-", "")].filter(Boolean).join(", ");
+    : room ? "" : ro ? "Agent-to-agent DM. Post here to resume it if it is paused." : ["Active", agent?.profile?.role, agent?.model.replace("claude-", "")].filter(Boolean).join(", ");
   h.style.setProperty("--h", hue(room ? conv.title : members[0]));
   h.innerHTML = `<div class="title">${room ? `<span class="ico">${ic("hash")}</span>` : ro ? pairAv(conv.title) : av(members[0], "sm")}<span>${esc(pairTitle(conv.title))}</span></div>
     <div class="status ${working.length ? "busy" : ""}" ${sub ? "" : "hidden"} style="${agent?.kind === "external" && !agent.online ? "--dot:var(--faint)" : ""}"><span class="sd"></span>${esc(sub)}</div><div class="sp"></div>`;
+  const stopTargets = working.filter((n) => state.agents.find((a) => a.name === n));
+  if (stopTargets.length) { const b = document.createElement("button"); b.className = "btn sm stop"; b.textContent = "Stop"; b.title = "Cancel the current turn and clear the queue";
+    b.onclick = async () => { b.disabled = true; try { for (const n of stopTargets) await api(`/agents/${encodeURIComponent(n)}/cancel`, "POST", {}); } catch (err) { toast(err.message); } }; h.append(b); }
+  if (!room && !ro && agent?.kind === "claude") { // live model change and restart, no recreate
+    const sel = document.createElement("select"); sel.className = "hsel"; sel.title = "Model for this agent's next turn";
+    const opts = [...new Set([...(models || []), agent.model])]; sel.innerHTML = opts.map((m) => `<option value="${esc(m)}" ${m === agent.model ? "selected" : ""}>${esc(m.replace("claude-", ""))}</option>`).join("");
+    sel.onchange = async () => { try { await api(`/agents/${encodeURIComponent(agent.name)}/model`, "POST", { model: sel.value }); toast("Model changed"); await refresh(); } catch (err) { toast(err.message); sel.value = agent.model; } };
+    const rb = document.createElement("button"); rb.className = "btn sm"; rb.textContent = "Restart"; rb.title = "Restart this agent's process (stops running work; memory and files stay)";
+    rb.onclick = async () => { if (!confirm(`Restart ${agent.name}? Running work is stopped.`)) return; rb.disabled = true; try { await api(`/agents/${encodeURIComponent(agent.name)}/restart`, "POST", {}); toast(`${agent.name} restarted`); } catch (err) { toast(err.message); } rb.disabled = false; };
+    h.append(sel, rb);
+  }
   if (!room) return;
   const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
   st.innerHTML = `<span class="avs">${conv.members.slice(0, 4).map((m) => av(m, "xs")).join("")}</span><span>${conv.members.length} member${conv.members.length === 1 ? "" : "s"}</span>`; h.append(st);
@@ -437,10 +451,11 @@ function msgNode(m, prev, newFrom) {
   const grouped = prev && prev.from === m.from && new Date(prev.at).toDateString() === d.toDateString() && d - new Date(prev.at) < 5 * 60e3 && newFrom !== m.seq;
   const x = document.createElement("div"); x.dataset.seq = m.seq; x.style.setProperty("--h", hue(m.from)); x.className = "m" + (grouped ? "" : " first") + (m.text.startsWith("failed") ? " err" : "");
   x.innerHTML = (grouped ? `<div class="gut">${hm(d)}</div>` : av(m.from, "md")) + `<div class="main">${grouped ? "" : `<div><span class="who">${esc(label(m.from))}</span><span class="when">${hm(d)}</span></div>`}<div class="body">${md(m.text)}</div></div>`;
-  if (m.activity?.length) x.querySelector(".main").append(actEl(m.activity, `${ic("tool")}<span>${m.activity.length} tool call${m.activity.length > 1 ? "s" : ""}</span>${ic("caret", "chev")}`, false));
+  if (m.activity?.length) x.querySelector(".main").append(actEl(m.activity, `${ic("tool")}<span>${m.activity.filter((i) => i.name !== "say").length ? `${m.activity.filter((i) => i.name !== "say").length} tool call${m.activity.filter((i) => i.name !== "say").length > 1 ? "s" : ""}` : "Work log"}</span>${ic("caret", "chev")}`, false));
   f.append(x); return f;
 }
 function toolEl(it) {
+  if (it.name === "say") { const t = document.createElement("div"); t.className = "tool say"; t.textContent = it.input; return t; } // narration before the answer
   const t = document.createElement("div"); t.className = "tool" + (it.result === undefined ? " run" : "");
   t.innerHTML = `<span class="nm">${esc(it.name.replace(/^mcp__/, "").replace(/__/g, " / "))}</span> <span class="in">${esc(it.input)}</span>` + (it.result !== undefined ? `<div class="res${it.ok === false ? " bad" : ""}">${esc(it.result)}</div>` : "");
   return t;
@@ -450,6 +465,7 @@ function actEl(items, html, open) {
   const s = document.createElement("summary"); s.innerHTML = html; d.append(s); items.forEach((it) => d.append(toolEl(it))); return d;
 }
 
+let models = null; api("/models").then((r) => { models = r.models; }).catch(() => {});
 const sc = $("scroller");
 const nearBottom = () => sc.scrollHeight - sc.scrollTop - sc.clientHeight < 100;
 function renderAll(newFrom) {
@@ -463,8 +479,8 @@ async function open(id, focusSeq) {
   if (cur && id !== cur) { saveDraft(); drawNav(); }
   cur = id; conv = await api("/conversations/" + encodeURIComponent(id));
   const newFrom = conv.messages.find((m) => m.seq > (readAt[id] ?? 0) && m.from !== "user" && m.from !== "system")?.seq ?? null;
-  const ro = id.includes("+"); $("comp").classList.toggle("off", ro); $("txt").disabled = ro;
-  $("txt").placeholder = ro ? "Agent-to-agent conversations are read-only" : conv.kind === "room" ? `Message #${conv.title}. Use @name to address one agent.` : `Message ${conv.title}`;
+  const ro = false; $("comp").classList.toggle("off", ro); $("txt").disabled = ro;
+  $("txt").placeholder = id.includes("+") ? "Post here to resume a paused agent conversation" : conv.kind === "room" ? `Message #${conv.title}. Use @name to address one agent.` : `Message ${conv.title}`;
   txt.value = drafts[id] ?? ""; renderAll(newFrom); drawLive(); drawHeader(); markRead(); updSend(); if (!ro) txt.focus();
   $("jump").style.display = "none";
   if (focusSeq) { const el = sc.querySelector(`[data-seq="${focusSeq}"]`); if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); } }
@@ -488,7 +504,7 @@ const addNode = (node) => sc.append(node);
 
 // ---- composer ----
 const txt = $("txt");
-const updSend = () => { $("send").disabled = !txt.value.trim() || !cur || cur.includes("+"); txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 240) + "px"; };
+const updSend = () => { $("send").disabled = !txt.value.trim() || !cur; txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 240) + "px"; };
 async function submit() {
   const text = txt.value.trim(); if (!text || !cur) return; txt.value = ""; saveDraft(); updSend(); hideMention();
   try { await api(`/conversations/${encodeURIComponent(cur)}/messages`, "POST", { text }); } catch (err) { toast(err.message); txt.value = text; saveDraft(); updSend(); }

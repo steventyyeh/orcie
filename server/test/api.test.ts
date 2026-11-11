@@ -13,7 +13,7 @@ let srv: ChildProcess;
 before(async () => {
   writeFileSync(`${dir}/secret`, SECRET);
   srv = spawn("node", ["--experimental-strip-types", "server/src/index.ts"], { env: { ...process.env, HOME: dir, PORT: String(UI), ORCIE_AGENT_PORT: String(AG), ORCIE_DB: `${dir}/t.db`,
-    ORCIE_SECRET_FILE: `${dir}/secret`, ORCIE_STORE: `${dir}/a.json`, ORCIE_STATE: `${dir}/s.json`, ORCIE_API_PORT: String(AG + 1000) }, stdio: "ignore" });
+    ORCIE_SECRET_FILE: `${dir}/secret`, ORCIE_STORE: `${dir}/a.json`, ORCIE_STATE: `${dir}/s.json`, ORCIE_API_PORT: String(AG + 1000), ORCIE_STREAK_LIMIT: "3" }, stdio: "ignore" });
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${UI}/api/state`); return; } catch { await new Promise((r) => setTimeout(r, 200)); } }
   throw new Error("server did not start");
 });
@@ -39,8 +39,8 @@ test("agent listener: a token for an agent that does not exist is refused", asyn
 });
 
 // ---- memory tools through the agent listener (an external agent stands in for a container: it has a token but needs no Docker)
-const agentCall = async (as: string, path: string, body: unknown) => {
-  const r = await fetch(`http://127.0.0.1:${AG}${path}`, { method: "POST", headers: { authorization: `Bearer ${agentToken(SECRET, as)}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+const agentCall = async (as: string, path: string, body: unknown, extra: Record<string, string> = {}) => {
+  const r = await fetch(`http://127.0.0.1:${AG}${path}`, { method: "POST", headers: { authorization: `Bearer ${agentToken(SECRET, as)}`, "content-type": "application/json", ...extra }, body: JSON.stringify(body) });
   return { status: r.status, body: await r.json() as any };
 };
 const uiPost = async (path: string, body: unknown) => (await ui(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json() as Promise<any>;
@@ -56,4 +56,52 @@ test("memory tools: remember, recall and read_room are scoped to the calling age
   assert.match(read.body.text, /quasar release on Friday/);
   assert.equal((await agentCall("yan", "/rooms/read", { room: "#plans" })).status, 404); // yan is not in that room
   assert.match((await agentCall("yan", "/memory/recall", { query: "quasar" })).body.text, /nothing found/); // and cannot recall it
+});
+
+// ---- room behaviour: addressing, cross-room messaging, loop guard, control
+const conv = async (id: string) => (await ui(`/api/conversations/${encodeURIComponent(id)}`)).json() as Promise<any>;
+test("addressing is saved on each message (to / mentions)", async () => {
+  await uiPost("/agents/external", { name: "kay" }); await uiPost("/agents/external", { name: "lee" });
+  const room = await uiPost("/api/rooms", { title: "addr", members: ["kay", "lee"], mode: "parallel" });
+  const post = (text: string) => uiPost(`/api/conversations/${encodeURIComponent(room.id)}/messages`, { text });
+  assert.deepEqual((await post("kay, please look")).to, ["kay"]);
+  assert.deepEqual((await post("@here status")).to, ["@here"]);
+  const none = await post("morning all good"); assert.equal(none.to, undefined);
+});
+test("send_message: to the user, to a #room, and to another agent with the origin remembered", async () => {
+  const room = await uiPost("/api/rooms", { title: "origin-room", members: ["kay", "lee"], mode: "parallel" });
+  assert.match((await agentCall("kay", "/send_message", { to: "user", text: "hello user" })).body.text, /sent to the user/);
+  assert.equal((await conv("dm:kay")).messages.at(-1).from, "kay");
+  assert.match((await agentCall("kay", "/send_message", { to: "#origin-room", text: "hello room" })).body.text, /posted to #origin-room/);
+  assert.equal((await conv(room.id)).messages.at(-1).text, "hello room");
+  assert.equal((await agentCall("kay", "/send_message", { to: "#nowhere", text: "x" })).status, 400);
+  assert.equal((await agentCall("kay", "/send_message", { to: "kay", text: "x" })).status, 400);
+  const r = await agentCall("kay", "/send_message", { to: "lee", text: "please check the build" }, { "x-orcie-conversation": room.id });
+  assert.match(r.body.text, /sent to lee/); assert.match(r.body.text, /#origin-room/);
+  const pair = await conv("dm:kay+lee"); assert.equal(pair.origin, room.id); assert.equal(pair.async, true); assert.equal(pair.messages.at(-1).from, "kay");
+  const spoof = await agentCall("lee", "/send_message", { to: "kay", text: "hi" }, { "x-orcie-conversation": "dm:nobody-here" }); // an origin the sender is not part of is ignored
+  assert.equal(spoof.status, 200); assert.equal((await conv("dm:kay+lee")).origin, room.id);
+});
+test("loop guard: pauses with a visible notice after N agent messages in a row, resumes when the user posts (rooms and agent DMs)", async () => {
+  const room = await uiPost("/api/rooms", { title: "loop", members: ["kay", "lee"], mode: "parallel" });
+  const say = (t: string) => agentCall("kay", "/send_message", { to: "#loop", text: t });
+  for (const t of ["one", "two", "three"]) assert.match((await say(t)).body.text, /posted/);
+  assert.match((await say("four")).body.text, /paused/);
+  const msgs = (await conv(room.id)).messages; assert.equal(msgs.filter((m: any) => m.from === "system" && /Paused fan-out/.test(m.text)).length, 1);
+  assert.equal(msgs.filter((m: any) => m.from === "kay").length, 3); // the 4th was not posted
+  await uiPost(`/api/conversations/${encodeURIComponent(room.id)}/messages`, { text: "carry on" });
+  assert.match((await say("five")).body.text, /posted/); // resumed
+  // agent<->agent DM: the same guard
+  for (const t of ["a", "b", "c"]) await agentCall("kay", "/send_message", { to: "lee", text: t });
+  assert.match((await agentCall("kay", "/send_message", { to: "lee", text: "d" })).body.text, /paused/);
+  assert.match((await agentCall("kay", "/dm", { to: "lee", text: "e" })).body.reply, /Paused fan-out/); // sync /dm too
+  const pair = await conv("dm:kay+lee"); assert.ok(pair.messages.some((m: any) => m.from === "system" && /Paused fan-out/.test(m.text)));
+  const posted = await uiPost("/api/conversations/dm:kay%2Blee/messages", { text: "ok continue" }); assert.equal(posted.from, "user"); // the user can post in an agent DM
+  assert.match((await agentCall("kay", "/send_message", { to: "lee", text: "f" })).body.text, /sent to lee/);
+});
+test("control: cancel works for any agent, model change is validated and refused for non-container agents", async () => {
+  assert.equal((await ui("/api/agents/kay/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 200);
+  assert.equal((await ui("/api/agents/ghost/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 404);
+  const m = await ui("/api/agents/kay/model", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "claude-opus-5-5" }) }); assert.equal(m.status, 400); // external agent
+  assert.ok(((await (await ui("/api/models")).json()) as any).models.includes("claude-sonnet-5-5"));
 });

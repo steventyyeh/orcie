@@ -12,14 +12,15 @@ type Skill = { name: string; description: string; instructions: string };
 type Profile = { role: string; summary: string; systemPrompt: string; tools: { browser: boolean }; skills: Skill[]; memorySeed: string; resources: keyof typeof PRESETS; greeting?: string };
 type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; kind?: "claude" | "external" | "tmux"; lastSeen?: string; lastReply?: string };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
-type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number };
-type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential" };
+type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number; to?: string[]; mentions?: string[] };
+type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[]; messages: Msg[]; cursor: Record<string, number>; mode?: "parallel" | "sequential"; origin?: string; async?: boolean };
 
 // Orcie is subscription-only (Claude CLI login). Anthropic API credentials are never used: drop them so nothing inherits them.
 for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.env[k];
 import * as tmuxBridge from "./tmux-bridge.ts";
 import { guard, loadSecret, agentToken } from "./guard.ts";
 import { startAgentApi } from "./agent-api.ts";
+import { addressed, wakeTargets, isSilent, isAck, STREAK_LIMIT, streakKind } from "./addressing.ts";
 import { Journal, Notes, memoryBlock, hashNotes, participants, label as convLabel } from "./memory.ts";
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
@@ -44,7 +45,7 @@ const docker = (...a: string[]) => execFileSync("docker", a, { encoding: "utf8",
 const hostPort = (c: string) => Number(docker("port", c, "9090/tcp").split("\n")[0].split(":").pop()); // port changes on restart
 // Streams one turn from the agent's harness (NDJSON), reporting tool use via onEvent; resolves with the reply.
 async function turn(a: Agent, body: unknown, onEvent: (e: any) => void): Promise<string> {
-  const r = await fetch(`http://127.0.0.1:${hostPort(a.container)}/send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(900_000) });
+  const r = await fetch(`http://127.0.0.1:${hostPort(a.container)}/send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(body as object), model: a.model }), signal: AbortSignal.timeout(900_000) }); // model is per turn, so it can change without recreating the container
   const dec = new TextDecoder(); let buf = "", reply: string | null = null;
   const line = (l: string) => { if (!l.trim()) return; const e = JSON.parse(l); if (e.kind === "done") reply = e.reply; else if (e.kind === "error") throw new Error(e.error); else onEvent(e); };
   for await (const chunk of r.body as any) { buf += dec.decode(chunk, { stream: true }); let i; while ((i = buf.indexOf("\n")) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); } }
@@ -89,6 +90,32 @@ function recreateAgent(name: string) { // new container on the same volume (memo
   a.container = runContainer(name, a.model, a.profile); a.port = hostPort(a.container);
   return a;
 }
+const MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"];
+const validModel = (m: unknown): m is string => typeof m === "string" && /^claude-[a-z0-9.-]{1,40}$/.test(m);
+// Stop: cancel the running turn(s), drop everything queued, and mark what the agent has not read yet as handled.
+async function cancelAgent(name: string) {
+  const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
+  epochs.set(name, epochOf(name) + 1);
+  const active = [...(inflight.get(name) ?? [])];
+  for (const k of [...dirty]) if (k.endsWith(`|${name}`)) dirty.delete(k);
+  for (const c of Object.values(convs)) if (participants(c).includes(name) && c.messages.length) { c.cursor[name] = c.messages.at(-1)!.seq; db.setCursor(c.id, name, c.cursor[name]); }
+  if (a.kind === "external") for (const id of [...(pending.get(name) ?? [])]) clearPending(name, id);
+  else if (a.kind === "tmux") tmuxBridge.interrupt(a.container);
+  else { try { await harness(a, "/cancel", { method: "POST" }); } catch { /* container down: nothing to stop */ } }
+  for (const id of active) { const c = convs[id]; if (c) { post(c, "system", `${name} was stopped by the user.`); emit({ type: "typing", conv: id, agent: name, on: false }); } }
+  emit({ type: "state" }); return { stopped: name, conversations: active };
+}
+async function restartAgent(name: string) { // restart the container's process (same container, same volume)
+  const a = agents[name]; if (!a || a.kind === "external" || a.kind === "tmux") throw new Error("only container agents can be restarted");
+  await cancelAgent(name); docker("restart", a.container); a.port = hostPort(a.container);
+  for (let i = 0; i < 30; i++) { try { if ((await harness(a, "/healthz")).ok) break; } catch { /* still starting */ } await new Promise((r) => setTimeout(r, 1000)); }
+  emit({ type: "state" }); return { restarted: name };
+}
+function setModel(name: string, model: unknown) { // live: the harness gets the model on every turn, nothing is recreated
+  const a = agents[name]; if (!a || a.kind === "external" || a.kind === "tmux") throw new Error("only container agents have a model setting");
+  if (!validModel(model)) throw new Error("invalid model name");
+  a.model = model; db.putAgent(a); emit({ type: "state" }); return { name, model };
+}
 function createAgent(name: string, model: string, profile?: Profile) {
   if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error("name must be lowercase letters/digits/dashes");
   if (agents[name]) throw new Error(`agent ${name} exists`);
@@ -111,6 +138,11 @@ const journal = new Journal(); journal.rebuild(Object.values(convs)); // long-te
 const notes = new Notes(process.env.ORCIE_MEMORY_DIR ?? `${process.env.HOME}/.orcie/memory`);
 function post(c: Conv, from: string, text: string, activity?: Item[], hop?: number) {
   const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}), ...(hop !== undefined ? { hop } : {}) };
+  if (c.kind === "room" && from !== "system") { // who this message is for (saved so the UI and the recipients can tell asked from mentioned)
+    const a = addressed(text, c.members.filter((n) => n !== from), !agents[from]);
+    if (a.broadcast) m.to = ["@here"]; else if (a.asked.length) m.to = a.asked;
+    if (a.mentioned.length) m.mentions = a.mentioned;
+  }
   c.messages.push(m); db.addMsg(c.id, m); journal.onPost(c, m); emit({ type: "message", conv: c.id, msg: m });
   return m;
 }
@@ -193,7 +225,7 @@ async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
   if (!unseen.length) return null;
   const upto = c.messages.at(-1)!.seq, hop = Math.max(...unseen.map((m) => m.hop ?? 0)) + 1;
   emit({ type: "typing", conv: c.id, agent, on: true });
-  const items: Item[] = [];
+  const ep = epochOf(agent), items: Item[] = [];
   const onEvent = (e: any) => { // same shape as container agents' tool events, so the UI shows the live tool banner
     if (e.kind === "tool") { const item = { id: e.id, name: e.name, input: summarize(e.input) }; items.push(item); emit({ type: "activity", conv: c.id, agent, item }); }
     else if (e.kind === "tool_result") { const it = items.find((x) => x.id === e.id); if (it) { it.result = e.preview; it.ok = e.ok; emit({ type: "activity", conv: c.id, agent, update: { id: e.id, result: e.preview, ok: e.ok } }); } }
@@ -203,8 +235,9 @@ async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
     if (c.kind === "room") text = `(Orcie chat room "${c.title}", members: user, ${c.members.join(", ")}. Reply as a normal chat message, or exactly NO_REPLY if you have nothing to add.)\n${text}`;
     else if (c.id.includes("+")) text += "\n\n(If this needs no response, reply exactly NO_REPLY.)";
     const reply = (await tmuxBridge.turn({ session: agents[agent].container, from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conv: c.id, onEvent })).trim();
+    if (epochOf(agent) !== ep) return null; // stopped by the user
     c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
-    if (reply && !/^NO_REPLY\b/.test(reply)) { const m = post(c, agent, reply, items, hop); agents[agent].lastReply = m.at; db.putAgent(agents[agent]); route(c, m); }
+    if (reply && !isSilent(reply)) { const m = post(c, agent, reply, items, hop); agents[agent].lastReply = m.at; db.putAgent(agents[agent]); route(c, m); }
     return reply;
   } catch (e) {
     c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
@@ -212,20 +245,24 @@ async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
   } finally { emit({ type: "typing", conv: c.id, agent, on: false }); }
 }
 
+const inflight = new Map<string, Set<string>>(); // agent -> conversations it is working in right now
+const epochs = new Map<string, number>(); // bumped when the user stops an agent; turns started earlier drop their result
+const epochOf = (a: string) => epochs.get(a) ?? 0;
 const active = new Map<string, number>(); // in-flight turns per conversation (for the private API's wait)
 async function deliver(c: Conv, agent: string): Promise<string | null> {
   if (isExternal(agent)) return enqueueExternal(c, agent);
   if (isTmux(agent)) return deliverTmux(c, agent);
-  active.set(c.id, (active.get(c.id) ?? 0) + 1);
-  try { return await deliverInner(c, agent); } finally { active.set(c.id, (active.get(c.id) ?? 1) - 1); }
+  active.set(c.id, (active.get(c.id) ?? 0) + 1); (inflight.get(agent) ?? inflight.set(agent, new Set()).get(agent)!).add(c.id);
+  try { return await deliverInner(c, agent); } finally { active.set(c.id, (active.get(c.id) ?? 1) - 1); inflight.get(agent)?.delete(c.id); }
 }
 async function deliverInner(c: Conv, agent: string): Promise<string | null> {
   const unseenOf = () => c.messages.filter((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent);
   if (!unseenOf().length) return null;
   emit({ type: "typing", conv: c.id, agent, on: true });
-  const items: Item[] = [];
+  const ep = epochOf(agent), items: Item[] = [];
   const onEvent = (e: any) => {
-    if (e.kind === "tool") { const item = { id: e.id, name: e.name, input: summarize(e.input) }; items.push(item); emit({ type: "activity", conv: c.id, agent, item }); }
+    if (e.kind === "text") items.push({ id: `say${items.length}`, name: "say", input: String(e.text).slice(0, 4000) }); // narration before the answer goes into the message's work log
+    else if (e.kind === "tool") { const item = { id: e.id, name: e.name, input: summarize(e.input) }; items.push(item); emit({ type: "activity", conv: c.id, agent, item }); }
     else if (e.kind === "tool_result") { const it = items.find((x) => x.id === e.id); if (it) { it.result = e.preview; it.ok = e.ok; emit({ type: "activity", conv: c.id, agent, update: { id: e.id, result: e.preview, ok: e.ok } }); } }
   };
   try {
@@ -237,35 +274,55 @@ async function deliverInner(c: Conv, agent: string): Promise<string | null> {
       const earlier = c.messages.filter((m) => m.seq <= (c.cursor[agent] ?? 0) && m.from !== "system").slice(-10);
       let text = fmtMsgs(unseen);
       if (c.id.includes("+") && c.id.slice(3).split("+").some(isExternal)) text += "\n\n(If this needs no response, reply exactly NO_REPLY.)"; // lets an agent end an exchange with an external agent
+      const note = addrNote(c, agent, unseen);
       if (c.kind === "room") {
         text = pass === 0
           ? `You are in the chat room "${c.title}" (members: user, ${c.members.join(", ")}), a live group chat like a team Slack channel.\n\n${earlier.length ? `Earlier in the room (context):\n${fmtMsgs(earlier)}\n\n` : ""}New since you last looked:\n${text}\n\nFirst take in everything above, including what the other members have said, and understand where the discussion stands. Then decide whether you have something to contribute: answer questions, build on or push back on others' points, ask follow-ups (use @name to address someone), and move things toward what the user asked for. Avoid filler like "agreed" and don't repeat what was already said. If, having considered all of it, you have nothing to add right now, reply exactly NO_REPLY. Others may be drafting at the same moment as you.`
           : `While you were drafting, new messages arrived:\n${text}\n\nYour unposted draft was:\n${draft}\n\nTaking everything now said into account, reply with your final message (revise your draft, or drop whatever has already been covered), or reply exactly NO_REPLY if it is now redundant.`;
       }
+      if (note) text += `\n\n${note}`;
       const cutoff = new Date().toISOString(), n = notes.read(agent);
       const mem = memoryBlock({ agent, conv: c, incoming: unseen.map((m) => m.text).join("\n"), notes: n, journal, state: db.memGet(agent, c.id) });
       if (mem) text = `${mem}\n\n${text}`;
       reply = (await turn(agents[agent], { from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conversation: c.id }, onEvent)).trim();
       db.memSet(agent, c.id, cutoff, hashNotes(n)); // this conversation's session has now seen everything up to the cutoff
+      if (epochOf(agent) !== ep) return null; // stopped by the user: the queue was cleared, post nothing
       c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
       const arrived = c.messages.some((m) => m.seq > upto && m.from !== agent && m.from !== "system");
-      if (c.kind === "room" && pass === 0 && reply && reply !== "NO_REPLY" && arrived) { draft = reply; continue; } // hold and reconsider
-      if (reply && reply !== "NO_REPLY") route(c, post(c, agent, reply, items, hop));
+      if (c.kind === "room" && pass === 0 && reply && !isSilent(reply) && arrived) { draft = reply; continue; } // hold and reconsider
+      const worked = items.some((i) => i.name !== "say");
+      if (items.at(-1)?.name === "say" && items.at(-1)!.input.trim() === reply.trim()) items.pop(); // the final answer is the message itself, not work log
+      if (reply && !isSilent(reply) && !(c.kind === "room" && !worked && isAck(reply))) route(c, post(c, agent, reply, items, hop));
       break;
     }
     return reply;
   } catch (e) {
+    if (epochOf(agent) !== ep || /cancelled/.test(String(e))) return null; // cancel() already told the room
     post(c, "system", `${agent} failed: ${String(e).slice(0, 300)}`);
     return null;
   } finally { emit({ type: "typing", conv: c.id, agent, on: false }); }
+}
+// Orca-style note on why this turn happened and where the answer goes.
+function addrNote(c: Conv, agent: string, unseen: Msg[]): string {
+  const to = new Set(unseen.flatMap((m) => m.to ?? [])), mentions = new Set(unseen.flatMap((m) => m.mentions ?? []));
+  const out: string[] = [];
+  if (c.kind === "room") {
+    if (to.has(agent)) out.push("You were asked directly: always answer what was asked, briefly and with the substance (if you answered before, give the answer again or what changed; never just say you already answered).");
+    else if (to.has("@here")) out.push("This went to everyone. Reply only with your own part or information nobody else has; if others will cover it, reply NO_REPLY.");
+    else if (mentions.has(agent)) out.push("You were only MENTIONED in passing; nobody asked you anything. Take any action that is yours, but reply NO_REPLY unless what was said about you is wrong or someone is blocked on you.");
+    else if (unseen.some((m) => !agents[m.from] && m.from !== "system") && !to.size) out.push("The user spoke to the room without naming anyone: say something only if you own the topic or hold information nobody else has.");
+    else out.push("You were NOT addressed. Default to NO_REPLY. Speak only if you own the topic, hold information nobody else has posted, or see a real problem (wrong fact, risk, blocked work).");
+  }
+  const o = c.origin && convs[c.origin];
+  if (o && c.id.includes("+")) out.push(`This DM was started from ${o.kind === "room" ? `#${o.title}` : "your conversation with the user"}; when you have what was needed there, report it with: send_message "${o.kind === "room" ? `#${o.title}` : "user"}" "<text>".`);
+  return out.length ? `(${out.join(" ")} To stay silent, reply with exactly NO_REPLY and nothing else; never explain why you are silent.)` : "";
 }
 
 // ---- routing ----
 // Every posted message is delivered to every other member's session at the same moment. Each (conversation, agent)
 // has its own serial worker: if the agent is mid-turn, new messages are batched into its next turn (cursor-based),
 // so agents never wait on each other. Agent-to-agent discussion continues freely until a per-human-message budget
-// is spent (PER_AGENT replies each since the user last spoke), which bounds loops without cutting threads short.
-const PER_AGENT = Number(process.env.ORCIE_ROOM_REPLIES ?? 5);
+// is spent (see the circuit breaker below), which bounds loops without cutting threads short.
 const running = new Set<string>(), dirty = new Set<string>();
 function kick(c: Conv, agent: string) {
   const k = `${c.id}|${agent}`;
@@ -274,29 +331,35 @@ function kick(c: Conv, agent: string) {
   (async () => { do { dirty.delete(k); await deliver(c, agent); } while (dirty.has(k)); })().finally(() => running.delete(k));
 }
 const chains = new Map<string, Promise<unknown>>();
+// Circuit breaker: after STREAK_LIMIT agent messages in a row with no message from the human, fan-out pauses (a visible
+// notice is posted once) and resumes when the human posts. Computed from history, so it survives restarts.
+const humanIdx = (c: Conv) => c.messages.findLastIndex((x) => !agents[x.from] && x.from !== "system");
+const streak = (c: Conv) => c.messages.slice(humanIdx(c) + 1).filter((x) => agents[x.from]).length;
+const limitOf = (c: Conv) => Number(process.env.ORCIE_STREAK_LIMIT) || STREAK_LIMIT[streakKind(c)];
+const isPaused = (c: Conv) => streak(c) >= limitOf(c);
+function pauseNotice(c: Conv) {
+  if (c.messages.slice(humanIdx(c) + 1).some((x) => x.from === "system" && x.text.startsWith("Paused fan-out"))) return;
+  post(c, "system", `Paused fan-out: ${streak(c)} agent messages in a row without you. Post here to resume.`);
+}
 function route(c: Conv, m: Msg) {
   if (m.from === "system") return;
+  const human = !agents[m.from];
+  if (!human && isPaused(c)) return void pauseNotice(c);
   if (c.kind === "dm") {
     const pair = c.id.includes("+") ? c.id.slice(3).split("+") : null;
     if (!pair) { const t = c.members[0]; if (m.from !== t) kick(c, t); return; } // dm:<agent>: anyone else (user, API client, external agent) triggers it
-    const other = pair.find((n) => n !== m.from); // agent<->agent DMs are answered synchronously by /dm, except with an external agent (async both ways)
-    const recent = c.messages.filter((x) => Date.now() - Date.parse(x.at) < 10 * 60_000).length; // loop guard: at most 12 messages per 10 minutes
-    if (other && agents[other] && (isExternal(m.from) || isExternal(other)) && recent < 12) kick(c, other);
+    if (human) return void pair.filter((n) => agents[n]).forEach((n) => kick(c, n)); // the user posting in an agent<->agent DM wakes both (and resumes a paused one)
+    const other = pair.find((n) => n !== m.from); // sync DMs (/dm) are answered inline; async ones (send_message) and external/tmux agents continue through the queue
+    if (other && agents[other] && (c.async || isExternal(m.from) || isExternal(other) || isTmux(other))) kick(c, other);
     return;
   }
-  const fromAgent = !!agents[m.from];
-  const mentioned = c.members.filter((n) => new RegExp(`@${n}\\b`).test(m.text));
-  const targets = (mentioned.length ? mentioned : c.members).filter((n) => n !== m.from);
   if (c.mode === "sequential") { // legacy: user message, agents answer one after another
-    if (fromAgent) return;
-    const run = async () => { for (const a of targets) await deliver(c, a); };
+    if (!human) return;
+    const run = async () => { for (const a of c.members.filter((n) => n !== m.from)) await deliver(c, a); };
     return void chains.set(c.id, (chains.get(c.id) ?? Promise.resolve()).then(run, run));
   }
-  if (fromAgent) { // budget: agent messages since the user last spoke, in total and for this author
-    const lastUser = c.messages.findLastIndex((x) => !agents[x.from] && x.from !== "system");
-    const since = c.messages.slice(lastUser + 1).filter((x) => agents[x.from]);
-    if (since.length >= PER_AGENT * c.members.length || since.filter((x) => x.from === m.from).length >= PER_AGENT) return; // they still see it next time they run
-  }
+  const others = c.members.filter((n) => n !== m.from);
+  const targets = wakeTargets(addressed(m.text, others, human), others, human); // asked, mentioned and @here wake; everyone else catches up on their next turn
   targets.forEach((a) => kick(c, a));
 }
 
@@ -365,7 +428,6 @@ createServer(async (req, res) => {
     }
     if ((m = url.match(/^\/api\/conversations\/([^/]+)\/messages$/)) && req.method === "POST") {
       const c = convs[decodeURIComponent(m[1])]; if (!c) return json(404, { error: "no such conversation" });
-      if (c.kind === "dm" && !c.members.includes("user") && c.id.includes("+")) return json(400, { error: "agent-to-agent DMs are read-only" });
       const msg = post(c, "user", String(b.text ?? ""), undefined, 0); route(c, msg); return json(202, msg);
     }
     if (req.method === "GET" && url === "/api/search") {
@@ -409,6 +471,11 @@ createServer(async (req, res) => {
     }
     if (req.method === "GET" && url === "/api/auth") return json(200, { mode: readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none" });
     if (req.method === "GET" && url === "/agents") return json(200, Object.values(agents));
+    if (req.method === "GET" && url === "/api/models") return json(200, { models: MODELS });
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/(cancel|restart|model)$/)) && req.method === "POST") {
+      if (!agents[m[1]]) return json(404, { error: "no such agent" });
+      try { return json(200, m[2] === "cancel" ? await cancelAgent(m[1]) : m[2] === "restart" ? await restartAgent(m[1]) : setModel(m[1], b.model)); } catch (e) { return json(400, { error: String(e.message ?? e) }); }
+    }
     if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5", b.profile ? clean(b.profile) : undefined));
     if (req.method === "POST" && url === "/dm") { // the human (UI/CLI) talking to an agent; agents use the authenticated agent listener
       if (!agents[b.to]) return json(404, { error: `no agent ${b.to}` });
@@ -430,11 +497,34 @@ startPrivateApi({
   authMode: () => (readToken() ? "token" : existsSync(`${CREDS}/.credentials.json`) ? "host-login-copy" : "none"),
 });
 
-async function agentDm(from: string, to: string, text: string) { // sync agent->agent DM; `from` comes from the caller's token
-  if (!agents[to]) throw new Error(`no agent ${to}`);
+function pairConv(from: string, to: string, origin?: string) {
   const id = `dm:${[from, to].sort().join("+")}`;
   const c = ensureConv(id, "dm", `${[from, to].sort().join(" ↔ ")}`, [to]); emit({ type: "state" });
+  if (origin && origin !== c.id && convs[origin] && participants(convs[origin]).includes(from) && c.origin !== origin) { c.origin = origin; db.putConv(c); } // remember where this started, to report back there
+  return c;
+}
+async function agentDm(from: string, to: string, text: string, origin?: string) { // sync agent->agent DM; `from` comes from the caller's token
+  if (!agents[to]) throw new Error(`no agent ${to}`);
+  const c = pairConv(from, to, origin);
+  if (isPaused(c)) { pauseNotice(c); return `(Paused fan-out: ${streak(c)} agent messages in a row in this DM without the user. The user must post in ${c.id} to resume; tell the user if this is blocking you.)`; }
   post(c, from, text); return deliver(c, to);
+}
+// send_message: asynchronous delivery to the user, a #channel, or another agent (who answers in their own time).
+async function sendMessage(from: string, target: string, text: string, origin?: string): Promise<string> {
+  if (!text.trim()) throw new Error("empty message");
+  if (target === "user") { const c = convs[`dm:${from}`]; if (!c) throw new Error("no DM with the user"); post(c, from, text); return "sent to the user"; }
+  if (target.startsWith("#")) {
+    const c = Object.values(convs).find((x) => x.kind === "room" && x.title.toLowerCase() === target.slice(1).toLowerCase() && x.members.includes(from));
+    if (!c) throw new Error(`you are not in a room called ${target}`);
+    if (isPaused(c)) { pauseNotice(c); return `paused: ${target} has had ${streak(c)} agent messages in a row; the user must post there to resume`; }
+    route(c, post(c, from, text)); return `posted to ${target}`;
+  }
+  if (!agents[target]) throw new Error(`no agent or room "${target}" (use "user", "#room" or an agent name)`);
+  if (target === from) throw new Error("cannot message yourself");
+  const c = pairConv(from, target, origin);
+  if (!c.async) { c.async = true; db.putConv(c); }
+  if (isPaused(c)) { pauseNotice(c); return `paused: this DM has had ${streak(c)} agent messages in a row; the user must post in ${c.id} to resume`; }
+  post(c, from, text); kick(c, target); return `sent to ${target}; they will answer in ${c.id}${c.origin ? ` and report back in ${c.origin === `dm:${from}` ? "your DM with the user" : `#${convs[c.origin].title}`}` : ""}`;
 }
 const mine = (who: string) => Object.values(convs).filter((c) => participants(c).includes(who));
 function findConv(who: string, ref: string) {
@@ -442,8 +532,9 @@ function findConv(who: string, ref: string) {
   return mine(who).find((c) => c.id.toLowerCase() === ref.trim().toLowerCase() || (c.kind === "room" && c.title.toLowerCase() === r) || convLabel(c, who).toLowerCase() === ref.trim().toLowerCase());
 }
 const fmtJ = (m: { at: string; label: string; from: string; text: string }, who: string) => `${m.at.slice(5, 16).replace("T", " ")} ${m.label} [${m.from === who ? "you" : m.from}]: ${m.text.replace(/\n/g, " ").slice(0, 600)}`;
-async function agentExtra(who: string, method: string, url: string, b: any): Promise<{ code: number; body: unknown } | null> {
+async function agentExtra(who: string, method: string, url: string, b: any, origin?: string): Promise<{ code: number; body: unknown } | null> {
   if (method !== "POST") return null;
+  if (url === "/send_message") { try { return { code: 200, body: { text: await sendMessage(who, String(b.to ?? ""), String(b.text ?? ""), origin) } }; } catch (e) { return { code: 400, body: { error: String(e.message ?? e) } }; } }
   if (url === "/memory/remember") { try { notes.remember(who, String(b.text ?? "")); return { code: 200, body: { ok: true } }; } catch (e) { return { code: 400, body: { error: String(e.message ?? e) } }; } }
   if (url === "/memory/recall") {
     const q = String(b.query ?? ""), nl = notes.search(who, q), hits = journal.related(who, null, q, { k: 15 });

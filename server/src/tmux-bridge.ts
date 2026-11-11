@@ -100,3 +100,6 @@ export function turn(t: TmuxTurn): Promise<string> {
   const next = prev.then(run, run); locks.set(t.session, next.catch(() => {}));
   return next as Promise<string>;
 }
+
+// Stop: Escape interrupts the session's current turn (what a human would press).
+export function interrupt(session: string) { try { tmux("send-keys", "-t", `=${session}:`, "Escape"); } catch { /* session gone */ } }
