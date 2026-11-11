@@ -34,3 +34,12 @@ export function identify(secret: string, names: string[], authorization?: string
   for (const n of names) { const eb = Buffer.from(agentToken(secret, n)); if (eb.length === tb.length && timingSafeEqual(eb, tb)) who = n; } // no early exit
   return who;
 }
+
+/** WebSocket upgrades are not covered by CORS, so the browser's Origin must be this server's own page, and the peer must be loopback. */
+export function wsGuard(port: number, r: { host?: string; origin?: string; peer?: string }): { status: number; error: string } | null {
+  const hosts = [`localhost:${port}`, `127.0.0.1:${port}`];
+  if (!r.host || !hosts.includes(r.host)) return { status: 403, error: "forbidden host" };
+  if (!r.origin || !hosts.some((h) => r.origin === `http://${h}`)) return { status: 403, error: "forbidden origin" };
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(r.peer ?? "")) return { status: 403, error: "loopback only" };
+  return null;
+}

@@ -42,6 +42,13 @@ grep -q "orcie-send-message" /data/workspace/CLAUDE.md || cat >> /data/workspace
 ## Messaging other conversations
 `send_message "<user | #room | agent>" "<text>"` posts to the user (their DM with you), to a room you are in, or to another agent, without waiting for a reply. `orcie-dm <agent> "<text>"` asks an agent and waits for the answer. When a DM was started from a room, report the result back there. If an agent chain pauses with a "Paused fan-out" notice, stop and tell the user instead of retrying.
 EOM
+# Live browser (appended once).
+grep -q "orcie-browser" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.md <<'EOM'
+
+<!-- orcie-browser -->
+## Browser
+Your Playwright browser is a real, persistent Chromium that the user can watch live (and keep logged-in sessions in). When you need the human to act in it (log in, solve a CAPTCHA, enter a code), run `browser_help "<what you need>"`: it asks the user to take control and returns when they hand the browser back, with their note. While the user holds control your browser actions are refused; wait instead of retrying.
+EOM
 # Apply onboarding profile (role, skills, tools, memory) and register tools.
 node /app/src/apply-profile.ts
 exec node /app/src/index.ts

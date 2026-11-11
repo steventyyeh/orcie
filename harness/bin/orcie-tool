@@ -1,7 +1,7 @@
 #!/bin/bash
 # Shared client for the orcie agent API (authenticated with this agent's own token; the server decides who is calling).
 # Used through the names remember / recall / read_room (symlinks to this file).
-call() { curl -s --max-time 120 -X POST "${ORCIE_SERVER:-http://host.docker.internal:8081}$1" -H 'content-type: application/json' -H "Authorization: Bearer ${ORCIE_AGENT_TOKEN}" -H "X-Orcie-Conversation: ${ORCIE_CONVERSATION}" -d "$2"; }
+call() { curl -s --max-time 1000 -X POST "${ORCIE_SERVER:-http://host.docker.internal:8081}$1" -H 'content-type: application/json' -H "Authorization: Bearer ${ORCIE_AGENT_TOKEN}" -H "X-Orcie-Conversation: ${ORCIE_CONVERSATION}" -d "$2"; }
 case "$(basename "$0")" in
   remember) [ $# -ge 1 ] || { echo 'usage: remember "<note>"' >&2; exit 1; }
     call /memory/remember "$(node -e 'console.log(JSON.stringify({text:process.argv[1]}))' "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:"saved")})' ;;
@@ -9,6 +9,8 @@ case "$(basename "$0")" in
     call /memory/recall "$(node -e 'console.log(JSON.stringify({query:process.argv[1]}))' "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
   read_room) [ $# -ge 1 ] || { echo 'usage: read_room "<#room | dm:name | conversation id>" [count]' >&2; exit 1; }
     call /rooms/read "$(node -e 'console.log(JSON.stringify({room:process.argv[1],limit:Number(process.argv[2])||30}))' "$1" "$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
+  browser_help) [ $# -ge 1 ] || { echo 'usage: browser_help "<what you need the human to do in the browser>"' >&2; exit 1; }
+    call /browser/request "$(node -e 'console.log(JSON.stringify({reason:process.argv[1]}))' "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
   send_message) [ $# -ge 2 ] || { echo 'usage: send_message "<user | #room | agent>" "<text>"' >&2; exit 1; }
     t="$1"; shift
     call /send_message "$(node -e 'console.log(JSON.stringify({to:process.argv[1],text:process.argv[2]}))' "$t" "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;

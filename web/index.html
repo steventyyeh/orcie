@@ -45,7 +45,24 @@ button{font:inherit;color:inherit;cursor:pointer}
 .btn.sm{height:30px;padding:0 var(--s3);font-size:13px}
 .tool.say{font-style:italic;color:var(--faint);white-space:pre-wrap}
 .btn.stop{border-color:var(--danger,#c0392b);color:var(--danger,#c0392b)}
-.hsel{height:30px;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);font-size:13px;padding:0 var(--s2)}
+.hsel{flex:0 0 auto;width:auto;max-width:150px;height:30px;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);font-size:13px;padding:0 var(--s2)}
+
+/* live browser, picture-in-picture */
+#pip{position:fixed;right:var(--s5);bottom:var(--s5);width:520px;height:420px;min-width:320px;min-height:260px;max-width:96vw;max-height:92vh;z-index:60;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--r3,10px);box-shadow:0 8px 32px rgba(0,0,0,.28);resize:both;overflow:hidden}
+#pip.max{inset:var(--s4);width:auto;height:auto;resize:none}
+#pip .ph{display:flex;align-items:center;gap:var(--s3);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line);cursor:move;user-select:none;font-size:13px}
+#pip .ph b{font-weight:600}
+#pip .chip{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;background:var(--hover);color:var(--fg)}
+#pip .chip.agent{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+#pip .chip.human{background:color-mix(in srgb,#2e9e5b 22%,transparent)}
+#pip .chip.ask{background:color-mix(in srgb,#d98e04 28%,transparent);animation:none}
+#pip .pl{flex:1}
+#pip .pb{flex:1;min-height:0;position:relative;background:#111;display:flex;align-items:center;justify-content:center}
+#pip .pb .cv{position:absolute;inset:0}
+#pip .pb img{max-width:100%;max-height:100%;object-fit:contain}
+#pip .pm{position:absolute;left:0;right:0;top:0;padding:var(--s2) var(--s3);font-size:12px;background:rgba(0,0,0,.7);color:#fff;z-index:2}
+#pip .pf{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);border-top:1px solid var(--line)}
+#pip input[type=text]{flex:1;min-width:120px;height:30px;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);padding:0 var(--s2);font-size:13px}
 .btn:disabled{opacity:.5;cursor:not-allowed;filter:none}
 .iconbtn{width:32px;height:32px;display:grid;place-items:center;border-radius:var(--r1);border:0;background:transparent;color:var(--mute);transition:background .12s}
 .iconbtn:hover{background:var(--card);color:var(--fg)}
@@ -419,7 +436,8 @@ function drawHeader() {
     sel.onchange = async () => { try { await api(`/agents/${encodeURIComponent(agent.name)}/model`, "POST", { model: sel.value }); toast("Model changed"); await refresh(); } catch (err) { toast(err.message); sel.value = agent.model; } };
     const rb = document.createElement("button"); rb.className = "btn sm"; rb.textContent = "Restart"; rb.title = "Restart this agent's process (stops running work; memory and files stay)";
     rb.onclick = async () => { if (!confirm(`Restart ${agent.name}? Running work is stopped.`)) return; rb.disabled = true; try { await api(`/agents/${encodeURIComponent(agent.name)}/restart`, "POST", {}); toast(`${agent.name} restarted`); } catch (err) { toast(err.message); } rb.disabled = false; };
-    h.append(sel, rb);
+    const bb = document.createElement("button"); bb.className = "btn sm"; bb.textContent = "Browser"; bb.title = "Watch this agent's browser live; take control when needed"; bb.onclick = () => openPip(agent.name);
+    h.append(sel, rb, bb);
   }
   if (!room) return;
   const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
@@ -501,6 +519,67 @@ function drawLive() {
   if (stick) sc.scrollTop = sc.scrollHeight;
 }
 const addNode = (node) => sc.append(node);
+
+// ---- live browser panel (picture-in-picture): watch the agent's browser, take control, hand it back ----
+let pip = null;
+async function openPip(agent) {
+  if (pip && pip.agent === agent) return;
+  closePip();
+  const el = document.createElement("div"); el.id = "pip";
+  el.innerHTML = `<div class="ph"><b>${esc(agent)}</b><span class="chip agent" data-r="chip">Connecting</span><span class="pl"></span><button class="btn sm" data-r="max" title="Fullscreen">Expand</button><button class="btn sm" data-r="close" title="Close (the agent keeps its browser)">Close</button></div>
+    <div class="pb"><div class="cv" data-r="cv"></div><img data-r="shot" alt="" hidden><div class="pm" data-r="msg" hidden></div></div>
+    <div class="pf"><button class="btn sm p" data-r="take">Take control</button><button class="btn sm" data-r="dismiss" hidden>Dismiss request</button>
+      <input type="text" data-r="note" placeholder="Hand-back note (optional)" hidden><button class="btn sm p" data-r="back" hidden>Hand back</button>
+      <input type="text" data-r="typ" placeholder="Type into the focused field, then Enter" hidden><button class="btn sm" data-r="reconnect" hidden>Reconnect</button><button class="btn sm" data-r="restart" title="Close pages and restart this browser">Restart browser</button></div>`;
+  document.body.append(el);
+  const r = (n) => el.querySelector(`[data-r="${n}"]`);
+  pip = { agent, el, r, rfb: null, ctl: null, shot: null, poll: null };
+  r("close").onclick = closePip; r("max").onclick = () => el.classList.toggle("max");
+  r("take").onclick = () => pipCall("take"); r("dismiss").onclick = () => pipCall("cancel");
+  r("back").onclick = async () => { await pipCall("release", { note: r("note").value.trim() }); r("note").value = ""; };
+  r("reconnect").onclick = () => pipVnc();
+  r("restart").onclick = async () => { if (confirm("Restart this browser? Open pages are closed; logins are kept.")) { await pipCall("restart"); setTimeout(pipVnc, 2500); } };
+  r("typ").onkeydown = async (ev) => { if (ev.key !== "Enter" || !r("typ").value) return; const text = r("typ").value; r("typ").value = ""; try { await api(`/agents/${encodeURIComponent(agent)}/browser/type`, "POST", { text, submit: false }); } catch (err) { toast(err.message); r("typ").value = text; } };
+  const hd = el.querySelector(".ph"); let drag = null; // drag by the title bar
+  hd.onmousedown = (ev) => { if (ev.target.closest("button") || el.classList.contains("max")) return; const b = el.getBoundingClientRect(); drag = { x: ev.clientX - b.left, y: ev.clientY - b.top }; ev.preventDefault(); };
+  pip.mm = (ev) => { if (!drag) return; el.style.left = Math.max(0, ev.clientX - drag.x) + "px"; el.style.top = Math.max(0, ev.clientY - drag.y) + "px"; el.style.right = el.style.bottom = "auto"; };
+  pip.mu = () => { drag = null; }; addEventListener("mousemove", pip.mm); addEventListener("mouseup", pip.mu);
+  await pipControl(); pipVnc();
+  pip.poll = setInterval(pipControl, 2000);
+}
+function closePip() {
+  if (!pip) return; clearInterval(pip.poll); clearInterval(pip.shot); try { pip.rfb?.disconnect(); } catch {} removeEventListener("mousemove", pip.mm); removeEventListener("mouseup", pip.mu); pip.el.remove(); pip = null;
+}
+async function pipCall(action, body = {}) { if (!pip) return; try { pip.ctl = await api(`/agents/${encodeURIComponent(pip.agent)}/browser/${action}`, "POST", body); pipDraw(); } catch (err) { toast(err.message); } }
+async function pipControl() { if (!pip) return; try { pip.ctl = await api(`/agents/${encodeURIComponent(pip.agent)}/browser/control`); } catch { pip.ctl = null; } pipDraw(); }
+function pipDraw() {
+  if (!pip) return; const { r, ctl } = pip, human = ctl?.holder === "human", ask = ctl?.pending;
+  const chip = r("chip"); chip.className = "chip " + (human ? "human" : ask ? "ask" : "agent");
+  chip.textContent = !ctl ? "Unavailable" : human ? "You have control" : ask ? "Needs your help" : "Agent has control";
+  r("take").hidden = human; r("dismiss").hidden = !ask; r("note").hidden = r("back").hidden = !human; r("typ").hidden = !human;
+  const m = r("msg"); m.hidden = !(ask && ctl.reason) || human; m.textContent = ask && ctl.reason ? `${pip.agent} asks: ${ctl.reason}` : "";
+  if (pip.rfb) pip.rfb.viewOnly = !human; // the agent holds the browser: watch only
+}
+async function pipVnc() { // live view over VNC; if it is down, keep the picture alive with screenshots
+  if (!pip) return; const { r } = pip; try { pip.rfb?.disconnect(); } catch {} pip.rfb = null; clearInterval(pip.shot);
+  try {
+    const { default: RFB } = await import("/novnc/core/rfb.js");
+    const cv = r("cv"); cv.innerHTML = ""; r("shot").hidden = true;
+    const rfb = new RFB(cv, `ws://${location.host}/api/agents/${encodeURIComponent(pip.agent)}/browser/vnc-ws`, { shared: true });
+    rfb.scaleViewport = true; rfb.background = "#111"; rfb.viewOnly = pip.ctl?.holder !== "human"; pip.rfb = rfb; r("reconnect").hidden = true;
+    const down = () => { if (pip?.rfb !== rfb) return; pip.rfb = null; r("reconnect").hidden = false; pipShots(); };
+    rfb.addEventListener("disconnect", down); rfb.addEventListener("securityfailure", down);
+  } catch { pipShots(); }
+}
+function pipShots() {
+  if (!pip) return; const { r } = pip; r("cv").innerHTML = ""; const img = r("shot"); img.hidden = false; clearInterval(pip.shot);
+  const tick = async () => { if (!pip) return; try { const res = await fetch(`/api/agents/${encodeURIComponent(pip.agent)}/browser/screenshot?t=${Date.now()}`); if (res.ok) { const u = URL.createObjectURL(await res.blob()); const old = img.src; img.src = u; if (old.startsWith("blob:")) URL.revokeObjectURL(old); } } catch {} };
+  tick(); pip.shot = setInterval(tick, 1000);
+}
+function pipEvent(e) {
+  if (e.event === "request") { toast(`${e.agent} needs your help in its browser`); if (!pip) openPip(e.agent); }
+  if (pip && pip.agent === e.agent) { if (e.control) pip.ctl = e.control; pipDraw(); }
+}
 
 // ---- composer ----
 const txt = $("txt");
@@ -681,6 +760,7 @@ es.onmessage = (ev) => {
     }
     refresh();
   }
+  if (e.type === "browser") pipEvent(e);
   if (e.type === "typing") { (typing[e.conv] ??= {})[e.agent] = e.on; if (e.on) (live[e.conv] ??= {})[e.agent] = []; drawNav(); if (e.conv === cur) { drawLive(); drawHeader(); } }
   if (e.type === "activity") {
     const items = ((live[e.conv] ??= {})[e.agent] ??= []);

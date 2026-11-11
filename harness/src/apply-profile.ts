@@ -10,7 +10,7 @@ const cfgFile = `${home}/.claude.json`;
 const cfg = JSON.parse(readFileSync(cfgFile, "utf8"));
 cfg.mcpServers = { ...(cfg.mcpServers ?? {}) };
 if (prof?.tools?.browser === false) delete cfg.mcpServers.playwright;
-else cfg.mcpServers.playwright = { command: "playwright-mcp", args: ["--headless", "--no-sandbox", "--browser", "chromium", "--executable-path", "/usr/local/bin/orcie-chromium"] };
+else cfg.mcpServers.playwright = { command: "playwright-mcp", args: ["--cdp-endpoint", "http://127.0.0.1:9223"] }; // the shared, human-viewable browser (harness/src/browser.ts)
 writeFileSync(cfgFile, JSON.stringify(cfg));
 
 if (prof && !existsSync("/data/.onboarded")) {

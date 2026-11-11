@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+// stdin/stdout relay to the container's x11vnc (127.0.0.1:5900); the orcie server runs it with `docker exec -i`, so no port is published.
+const net = require("net");
+const vnc = net.createConnection({ host: "127.0.0.1", port: 5900 }, () => { process.stdin.pipe(vnc); vnc.pipe(process.stdout); });
+vnc.on("error", (e) => { process.stderr.write(`vncpipe: ${e.message}\n`); process.exit(1); });
+vnc.on("end", () => process.exit(0));
+process.stdin.on("end", () => vnc.end());

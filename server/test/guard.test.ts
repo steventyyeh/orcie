@@ -46,3 +46,14 @@ test("secret file is created private and is stable", () => {
   const f = `${mkdtempSync(`${tmpdir()}/orcie-t-`)}/s`;
   const a = loadSecret(f); assert.equal(a, loadSecret(f)); assert.equal(statSync(f).mode & 0o777, 0o600);
 });
+
+import { wsGuard } from "../src/guard.ts";
+test("websocket upgrade: needs own Origin, own Host and a loopback peer", () => {
+  const good = { host: "127.0.0.1:8080", origin: "http://127.0.0.1:8080", peer: "127.0.0.1" };
+  assert.equal(wsGuard(8080, good), null);
+  assert.equal(wsGuard(8080, { ...good, host: "localhost:8080", origin: "http://localhost:8080", peer: "::1" }), null);
+  assert.equal(wsGuard(8080, { ...good, origin: undefined })?.status, 403);          // no Origin: not a browser page of ours
+  assert.equal(wsGuard(8080, { ...good, origin: "https://evil.example" })?.status, 403);
+  assert.equal(wsGuard(8080, { ...good, host: "evil.example" })?.status, 403);
+  assert.equal(wsGuard(8080, { ...good, peer: "172.17.0.3" })?.status, 403);          // another container
+});

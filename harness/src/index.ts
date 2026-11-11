@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { browserHttp, startBrowser } from "./browser.ts";
 
 // Per-agent harness: runs the Claude CLI headless, one turn per message, one resumable session per conversation.
 // Subscription login only; never an Anthropic API key.
@@ -57,6 +58,7 @@ const body = async (req: AsyncIterable<Buffer>) => { let r = ""; for await (cons
 createServer(async (req, res) => {
   const json = (code: number, b: unknown) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(b)); };
   try {
+    if (req.url?.startsWith("/browser/") && await browserHttp(req, res, req.method === "POST" ? await body(req) : {})) return;
     if (req.url === "/healthz") return json(200, { ok: true, conversations: Object.keys(sessions) });
     if (req.url === "/log") return json(200, { log: existsSync(LOG) ? readFileSync(LOG, "utf8").trim().split("\n").slice(-20).map((l) => JSON.parse(l)) : [] });
     if (req.method === "POST" && req.url === "/send") {
@@ -81,4 +83,4 @@ createServer(async (req, res) => {
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e) }); }
-}).listen(9090, () => console.log("orcie harness up"));
+}).listen(9090, () => { console.log("orcie harness up"); startBrowser().catch((e) => console.error("browser", e)); });

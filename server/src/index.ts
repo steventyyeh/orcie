@@ -1,6 +1,7 @@
 import { createServer, type ServerResponse } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, renameSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { openDb } from "./db.ts";
 import { startPrivateApi } from "./private-api.ts";
 import { tmpdir } from "node:os";
@@ -18,7 +19,8 @@ type Conv = { id: string; kind: "dm" | "room"; title: string; members: string[];
 // Orcie is subscription-only (Claude CLI login). Anthropic API credentials are never used: drop them so nothing inherits them.
 for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.env[k];
 import * as tmuxBridge from "./tmux-bridge.ts";
-import { guard, loadSecret, agentToken } from "./guard.ts";
+import { guard, wsGuard, loadSecret, agentToken } from "./guard.ts";
+import { upgrade } from "./ws-lite.ts";
 import { startAgentApi } from "./agent-api.ts";
 import { addressed, wakeTargets, isSilent, isAck, STREAK_LIMIT, streakKind } from "./addressing.ts";
 import { Journal, Notes, memoryBlock, hashNotes, participants, label as convLabel } from "./memory.ts";
@@ -27,6 +29,7 @@ const STATE = process.env.ORCIE_STATE ?? "state.json";
 const CREDS = process.env.ORCIE_CREDS ?? `${process.env.HOME}/.orcie/creds`;
 const IMAGE = "orcie-agent:dev";
 const PRESETS = { small: { cpus: "1", memory: "2g" }, standard: { cpus: "2", memory: "4g" }, large: { cpus: "4", memory: "8g" } } as const;
+const NOVNC = resolvePath(process.env.ORCIE_WEB_DIR ?? `${import.meta.dirname}/../../web`, "novnc");
 const WEB = new URL("../../web/index.html", import.meta.url);
 
 // Persistence: local SQLite (see db.ts). Memory holds a working copy; every change is written through.
@@ -404,15 +407,21 @@ async function onboardingTurn(name: string, model: string, history: { role: stri
 const view = (c: Conv) => ({ id: c.id, kind: c.kind, title: c.title, members: c.members, last: c.messages.at(-1) ?? null, count: c.messages.length, mode: c.mode ?? "parallel",
   inbound: c.messages.filter((m) => m.from !== "user" && m.from !== "system").map((m) => m.seq) }); // seqs of messages the user hasn't authored (for unread counts)
 
-createServer(async (req, res) => {
+const uiServer = createServer(async (req, res) => {
   const json = (code: number, b: unknown) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(b)); };
   try {
     const bad = guard(UI_PORT, { method: req.method, host: req.headers.host, origin: req.headers.origin, contentType: req.headers["content-type"] });
     if (bad) return json(bad.status, { error: bad.error });
-    const url = (req.url ?? "").split("?")[0];
+    const url = (req.url ?? "").split("?")[0]; let m0: RegExpMatchArray | null;
     if (req.method === "GET" && (url === "/" || url === "/index.html")) {
       res.writeHead(200, { "content-type": "text/html" }); return void res.end(readFileSync(WEB));
     }
+    if (req.method === "GET" && url.startsWith("/novnc/")) { // vendored noVNC client for the live-browser panel
+      const f = resolvePath(NOVNC, `.${decodeURIComponent(url.slice(6))}`);
+      if (!f.startsWith(`${NOVNC}/`) || !existsSync(f)) return json(404, { error: "not found" });
+      res.writeHead(200, { "content-type": f.endsWith(".js") ? "application/javascript" : f.endsWith(".css") ? "text/css" : "application/octet-stream" }); return void res.end(readFileSync(f));
+    }
+    if ((m0 = url.match(/^\/api\/agents\/([^/]+)\/browser\/(state|control|screenshot|take|release|cancel|type|restart)$/))) return void (await browserApi(m0[1], m0[2], req.method ?? "GET", req.headers["content-type"] ? await readJson(req) : {}, res));
     if (url === "/api/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
       res.write(": ok\n\n"); clients.add(res); return void req.on("close", () => clients.delete(res));
@@ -488,6 +497,16 @@ createServer(async (req, res) => {
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e instanceof Error ? e.message : e) }); }
+});
+uiServer.on("upgrade", (req, sock, head) => { // live browser: VNC relayed over a WebSocket, human only
+  const m = (req.url ?? "").split("?")[0].match(/^\/api\/agents\/([^/]+)\/browser\/vnc-ws$/);
+  const bad = wsGuard(UI_PORT, { host: req.headers.host, origin: req.headers.origin, peer: req.socket.remoteAddress });
+  const a = m && agents[decodeURIComponent(m[1])];
+  if (bad || !a || a.kind === "external" || a.kind === "tmux") return void sock.end(`HTTP/1.1 ${bad?.status ?? 404} ${bad ? "Forbidden" : "Not Found"}\r\n\r\n`);
+  const ws = upgrade(req, sock, head); if (!ws) return;
+  const p = spawn("docker", ["exec", "-i", a.container, "orcie-vncpipe"], { stdio: ["pipe", "pipe", "ignore"] });
+  p.stdout.on("data", (d: Buffer) => ws.send(d)); p.on("exit", () => ws.close());
+  ws.onMessage = (x) => { if (!p.stdin.destroyed) p.stdin.write(x.data); }; ws.onClose = () => { p.stdin.end(); p.kill(); };
 }).listen(UI_PORT, process.env.ORCIE_HOST ?? "127.0.0.1", () => console.log(`orcie server up on ${process.env.ORCIE_HOST ?? "127.0.0.1"}:${process.env.PORT ?? 8080}`));
 
 // Private token-authenticated API for a trusted remote client over Tailscale (docs/PRIVATE_API.md).
@@ -535,6 +554,17 @@ const fmtJ = (m: { at: string; label: string; from: string; text: string }, who:
 async function agentExtra(who: string, method: string, url: string, b: any, origin?: string): Promise<{ code: number; body: unknown } | null> {
   if (method !== "POST") return null;
   if (url === "/send_message") { try { return { code: 200, body: { text: await sendMessage(who, String(b.to ?? ""), String(b.text ?? ""), origin) } }; } catch (e) { return { code: 400, body: { error: String(e.message ?? e) } }; } }
+  if (url === "/browser/request") { // the agent asks the human to take over its browser, then waits for it to come back
+    const a = agents[who]; if (!a || a.kind === "external" || a.kind === "tmux") return { code: 400, body: { error: "no browser" } };
+    try {
+      const reason = String(b.reason ?? "help needed").slice(0, 500); await hbrowser(a, "/browser/control/request", "POST", { reason });
+      const dm = convs[`dm:${who}`]; if (dm) post(dm, "system", `${who} needs your help in its browser: ${reason}. Open the Browser panel and take control.`);
+      emit({ type: "browser", agent: who, event: "request", reason }); browserWaiting.add(who);
+      try { const c = await (await hbrowser(a, "/browser/control/wait?timeout=900", "GET", undefined, 910_000)).json() as any;
+        return { code: 200, body: { text: c.holder === "agent" && !c.pending ? (c.note ? `The human handed the browser back. Note: ${c.note}` : c.reason ? "The human handed the browser back." : "The request was dismissed; continue without it or explain what you need.") : "Still waiting for the human (timed out); try again later or tell the user." } }; }
+      finally { browserWaiting.delete(who); }
+    } catch (e) { return { code: 503, body: { error: String(e.message ?? e) } }; }
+  }
   if (url === "/memory/remember") { try { notes.remember(who, String(b.text ?? "")); return { code: 200, body: { ok: true } }; } catch (e) { return { code: 400, body: { error: String(e.message ?? e) } }; } }
   if (url === "/memory/recall") {
     const q = String(b.query ?? ""), nl = notes.search(who, q), hits = journal.related(who, null, q, { k: 15 });
@@ -549,3 +579,29 @@ async function agentExtra(who: string, method: string, url: string, b: any, orig
   return null;
 }
 startAgentApi({ port: AGENT_PORT, host: process.env.ORCIE_HOST ?? "127.0.0.1", secret: SECRET, agentNames: () => Object.keys(agents), dm: agentDm, extra: agentExtra });
+
+// ---- live browser (picture-in-picture panel) ----
+const readJson = async (req: AsyncIterable<Buffer | string>) => { let r = ""; for await (const c of req) r += c; return r ? JSON.parse(r) : {}; };
+const hbrowser = (a: Agent, path: string, method = "GET", body?: unknown, ms = 20_000) =>
+  fetch(`http://127.0.0.1:${hostPort(a.container)}${path}`, { method, headers: { authorization: `Bearer ${agentToken(SECRET, a.name)}`, "content-type": "application/json" }, ...(method === "POST" ? { body: JSON.stringify(body ?? {}) } : {}), signal: AbortSignal.timeout(ms) });
+const browserWaiting = new Set<string>(); // agents blocked in browser_help
+async function browserApi(name: string, action: string, method: string, b: any, res: ServerResponse) {
+  const send = (code: number, o: unknown) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
+  const a = agents[name]; if (!a) return send(404, { error: "no such agent" });
+  if (a.kind === "external" || a.kind === "tmux") return send(400, { error: "this agent has no container browser" });
+  const mutate = method === "POST";
+  if (["state", "control", "screenshot"].includes(action) === mutate) return send(405, { error: "method not allowed" });
+  try {
+    const r = await hbrowser(a, action === "take" || action === "release" || action === "cancel" ? `/browser/control/${action}` : `/browser/${action}`, method, b);
+    if (action === "screenshot") { res.writeHead(r.status, { "content-type": r.headers.get("content-type") ?? "image/png", "cache-control": "no-store" }); return void res.end(Buffer.from(await r.arrayBuffer())); }
+    const out = await r.json() as any; if (!r.ok) return send(r.status, out);
+    const dm = convs[`dm:${name}`];
+    if (action === "take" && dm) post(dm, "system", "You took control of the browser.");
+    if (action === "release" && dm) {
+      post(dm, "system", `You handed the browser back to ${name}.${out.note ? ` Note: ${out.note}` : ""}`);
+      if (out.note && !browserWaiting.has(name)) route(dm, post(dm, "user", `(I finished in the browser and handed it back to you. ${out.note})`)); // the agent was not waiting: tell it
+    }
+    if (mutate) emit({ type: "browser", agent: name, control: out });
+    return send(200, out);
+  } catch (e) { return send(503, { error: `browser unavailable: ${String(e).slice(0, 150)}` }); }
+}

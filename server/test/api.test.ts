@@ -105,3 +105,17 @@ test("control: cancel works for any agent, model change is validated and refused
   const m = await ui("/api/agents/kay/model", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "claude-opus-5-5" }) }); assert.equal(m.status, 400); // external agent
   assert.ok(((await (await ui("/api/models")).json()) as any).models.includes("claude-sonnet-5-5"));
 });
+
+test("browser API: unknown agent 404, external agents have no browser, wrong method 405, vnc-ws refuses foreign origins", async () => {
+  assert.equal((await ui("/api/agents/ghost/browser/state")).status, 404);
+  assert.equal((await ui("/api/agents/kay/browser/state")).status, 400); // external agent
+  assert.equal((await ui("/api/agents/kay/browser/take", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 400);
+  const ws = (origin?: string) => new Promise<number>((res) => { const r = request({ host: "127.0.0.1", port: UI, path: "/api/agents/kay/browser/vnc-ws", headers: { connection: "Upgrade", upgrade: "websocket", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==", "sec-websocket-version": "13", ...(origin ? { origin } : {}) } }, (x) => { x.resume(); res(x.statusCode ?? 0); }); r.on("upgrade", (x, s) => { s.destroy(); res(x.statusCode ?? 0); }); r.on("error", () => res(0)); r.end(); });
+  assert.equal(await ws("https://evil.example"), 403); assert.equal(await ws(), 403);
+  assert.equal(await ws(`http://127.0.0.1:${UI}`), 404); // allowed origin, but an external agent has no browser
+});
+test("static noVNC is served, and path traversal is refused", async () => {
+  assert.equal((await ui("/novnc/core/rfb.js")).status, 200);
+  assert.equal((await ui("/novnc/../../server/src/index.ts")).status, 404);
+  assert.equal((await ui("/novnc/%2e%2e/%2e%2e/package.json")).status, 404);
+});
