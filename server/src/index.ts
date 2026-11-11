@@ -20,6 +20,7 @@ for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.en
 import * as tmuxBridge from "./tmux-bridge.ts";
 import { guard, loadSecret, agentToken } from "./guard.ts";
 import { startAgentApi } from "./agent-api.ts";
+import { Journal, Notes, memoryBlock, hashNotes, participants, label as convLabel } from "./memory.ts";
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
 const CREDS = process.env.ORCIE_CREDS ?? `${process.env.HOME}/.orcie/creds`;
@@ -106,9 +107,11 @@ function ensureConv(id: string, kind: Conv["kind"], title: string, members: stri
   if (!convs[id]) { convs[id] = { id, kind, title, members, messages: [], cursor: {} }; db.putConv(convs[id]); }
   return convs[id];
 }
+const journal = new Journal(); journal.rebuild(Object.values(convs)); // long-term memory: derived from stored history on every start
+const notes = new Notes(process.env.ORCIE_MEMORY_DIR ?? `${process.env.HOME}/.orcie/memory`);
 function post(c: Conv, from: string, text: string, activity?: Item[], hop?: number) {
   const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}), ...(hop !== undefined ? { hop } : {}) };
-  c.messages.push(m); db.addMsg(c.id, m); emit({ type: "message", conv: c.id, msg: m });
+  c.messages.push(m); db.addMsg(c.id, m); journal.onPost(c, m); emit({ type: "message", conv: c.id, msg: m });
   return m;
 }
 
@@ -239,7 +242,11 @@ async function deliverInner(c: Conv, agent: string): Promise<string | null> {
           ? `You are in the chat room "${c.title}" (members: user, ${c.members.join(", ")}), a live group chat like a team Slack channel.\n\n${earlier.length ? `Earlier in the room (context):\n${fmtMsgs(earlier)}\n\n` : ""}New since you last looked:\n${text}\n\nFirst take in everything above, including what the other members have said, and understand where the discussion stands. Then decide whether you have something to contribute: answer questions, build on or push back on others' points, ask follow-ups (use @name to address someone), and move things toward what the user asked for. Avoid filler like "agreed" and don't repeat what was already said. If, having considered all of it, you have nothing to add right now, reply exactly NO_REPLY. Others may be drafting at the same moment as you.`
           : `While you were drafting, new messages arrived:\n${text}\n\nYour unposted draft was:\n${draft}\n\nTaking everything now said into account, reply with your final message (revise your draft, or drop whatever has already been covered), or reply exactly NO_REPLY if it is now redundant.`;
       }
+      const cutoff = new Date().toISOString(), n = notes.read(agent);
+      const mem = memoryBlock({ agent, conv: c, incoming: unseen.map((m) => m.text).join("\n"), notes: n, journal, state: db.memGet(agent, c.id) });
+      if (mem) text = `${mem}\n\n${text}`;
       reply = (await turn(agents[agent], { from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conversation: c.id }, onEvent)).trim();
+      db.memSet(agent, c.id, cutoff, hashNotes(n)); // this conversation's session has now seen everything up to the cutoff
       c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
       const arrived = c.messages.some((m) => m.seq > upto && m.from !== agent && m.from !== "system");
       if (c.kind === "room" && pass === 0 && reply && reply !== "NO_REPLY" && arrived) { draft = reply; continue; } // hold and reconsider
@@ -429,4 +436,25 @@ async function agentDm(from: string, to: string, text: string) { // sync agent->
   const c = ensureConv(id, "dm", `${[from, to].sort().join(" ↔ ")}`, [to]); emit({ type: "state" });
   post(c, from, text); return deliver(c, to);
 }
-startAgentApi({ port: AGENT_PORT, host: process.env.ORCIE_HOST ?? "127.0.0.1", secret: SECRET, agentNames: () => Object.keys(agents), dm: agentDm });
+const mine = (who: string) => Object.values(convs).filter((c) => participants(c).includes(who));
+function findConv(who: string, ref: string) {
+  const r = ref.trim().replace(/^#/, "").toLowerCase();
+  return mine(who).find((c) => c.id.toLowerCase() === ref.trim().toLowerCase() || (c.kind === "room" && c.title.toLowerCase() === r) || convLabel(c, who).toLowerCase() === ref.trim().toLowerCase());
+}
+const fmtJ = (m: { at: string; label: string; from: string; text: string }, who: string) => `${m.at.slice(5, 16).replace("T", " ")} ${m.label} [${m.from === who ? "you" : m.from}]: ${m.text.replace(/\n/g, " ").slice(0, 600)}`;
+async function agentExtra(who: string, method: string, url: string, b: any): Promise<{ code: number; body: unknown } | null> {
+  if (method !== "POST") return null;
+  if (url === "/memory/remember") { try { notes.remember(who, String(b.text ?? "")); return { code: 200, body: { ok: true } }; } catch (e) { return { code: 400, body: { error: String(e.message ?? e) } }; } }
+  if (url === "/memory/recall") {
+    const q = String(b.query ?? ""), nl = notes.search(who, q), hits = journal.related(who, null, q, { k: 15 });
+    const text = [nl.length ? `Notes:\n${nl.join("\n")}` : "", hits.length ? `History:\n${hits.map((m) => fmtJ(m, who)).join("\n")}` : ""].filter(Boolean).join("\n\n") || "(nothing found)";
+    return { code: 200, body: { text } };
+  }
+  if (url === "/rooms/read") {
+    const c = findConv(who, String(b.room ?? "")); if (!c) return { code: 404, body: { error: `no conversation "${b.room}" that you take part in. Yours: ${mine(who).map((x) => x.kind === "room" ? `#${x.title}` : x.id).join(", ")}` } };
+    const lim = Math.min(Math.max(Number(b.limit) || 30, 1), 100);
+    return { code: 200, body: { text: `${convLabel(c, who)} (${c.id}), latest ${Math.min(lim, c.messages.length)} of ${c.messages.length}:\n` + c.messages.slice(-lim).map((m) => `${m.at.slice(5, 16).replace("T", " ")} [${m.from === who ? "you" : m.from}]: ${m.text.replace(/\n/g, " ").slice(0, 600)}`).join("\n") } };
+  }
+  return null;
+}
+startAgentApi({ port: AGENT_PORT, host: process.env.ORCIE_HOST ?? "127.0.0.1", secret: SECRET, agentNames: () => Object.keys(agents), dm: agentDm, extra: agentExtra });

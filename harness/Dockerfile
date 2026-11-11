@@ -18,10 +18,12 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 RUN mkdir -p /data && chown node:node /data
 COPY --chown=node:node src /app/src
 COPY bin/orcie-dm /usr/local/bin/orcie-dm
+COPY bin/orcie-tool /usr/local/bin/orcie-tool
 COPY bin/git-credential-orcie /usr/local/bin/git-credential-orcie
 COPY bin/gh-wrapper /usr/local/bin/gh
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /usr/local/bin/orcie-dm /usr/local/bin/git-credential-orcie /usr/local/bin/gh /entrypoint.sh \
+RUN ln -s /usr/local/bin/orcie-tool /usr/local/bin/remember && ln -s /usr/local/bin/orcie-tool /usr/local/bin/recall && ln -s /usr/local/bin/orcie-tool /usr/local/bin/read_room \
+ && chmod +x /usr/local/bin/orcie-tool /usr/local/bin/orcie-dm /usr/local/bin/git-credential-orcie /usr/local/bin/gh /entrypoint.sh \
     && git config --system credential.helper orcie \
     && git config --system url."https://github.com/".insteadOf git@github.com: \
     && git config --system --add url."https://github.com/".insteadOf ssh://git@github.com/

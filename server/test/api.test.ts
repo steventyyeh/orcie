@@ -37,3 +37,23 @@ test("agent listener: a token for an agent that does not exist is refused", asyn
   const r = await fetch(`http://127.0.0.1:${AG}/dm`, { method: "POST", headers: { authorization: `Bearer ${agentToken(SECRET, "ghost")}`, "content-type": "application/json" }, body: JSON.stringify({ to: "bob", text: "hi" }) });
   assert.equal(r.status, 401);
 });
+
+// ---- memory tools through the agent listener (an external agent stands in for a container: it has a token but needs no Docker)
+const agentCall = async (as: string, path: string, body: unknown) => {
+  const r = await fetch(`http://127.0.0.1:${AG}${path}`, { method: "POST", headers: { authorization: `Bearer ${agentToken(SECRET, as)}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+  return { status: r.status, body: await r.json() as any };
+};
+const uiPost = async (path: string, body: unknown) => (await ui(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json() as Promise<any>;
+test("memory tools: remember, recall and read_room are scoped to the calling agent", async () => {
+  await uiPost("/agents/external", { name: "zed" }); await uiPost("/agents/external", { name: "yan" });
+  const room = await uiPost("/api/rooms", { title: "plans", members: ["zed"], mode: "parallel" });
+  await uiPost(`/api/conversations/${encodeURIComponent(room.id)}/messages`, { text: "We will ship the quasar release on Friday" });
+  assert.equal((await agentCall("zed", "/memory/remember", { text: "zed owns the quasar release" })).status, 200);
+  assert.equal((await agentCall("zed", "/memory/remember", { text: "   " })).status, 400);
+  const rec = await agentCall("zed", "/memory/recall", { query: "quasar" });
+  assert.match(rec.body.text, /zed owns the quasar release/); assert.match(rec.body.text, /ship the quasar release/);
+  const read = await agentCall("zed", "/rooms/read", { room: "#plans" });
+  assert.match(read.body.text, /quasar release on Friday/);
+  assert.equal((await agentCall("yan", "/rooms/read", { room: "#plans" })).status, 404); // yan is not in that room
+  assert.match((await agentCall("yan", "/memory/recall", { query: "quasar" })).body.text, /nothing found/); // and cannot recall it
+});

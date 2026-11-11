@@ -25,6 +25,16 @@ grep -q "orcie-git" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.m
 ## Git and GitHub
 git and gh are already authenticated (shared credential); clone, branch, commit and open PRs as asked. Work on a branch and open a PR rather than pushing to the default branch, and ask the user before force-pushing, deleting branches or repos, or changing repo settings. Never print or copy the token.
 EOM
+# Long-term memory tools (appended once, so existing agents get it too).
+grep -q "orcie-memory" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.md <<'EOM'
+
+<!-- orcie-memory -->
+## Long-term memory
+Orcie keeps a journal of every conversation you take part in and adds a "Long-term memory" block to your turns: your notes, older messages from your other conversations that look related, and what happened in them meanwhile. That block is context, not a new message to answer.
+- `remember "<note>"` saves a durable note (facts, decisions, commitments, people) that is shown to you in every conversation. Keep notes short and write only what is worth keeping.
+- `recall "<what to look for>"` searches your notes and the full history of all your conversations.
+- `read_room "<#room | dm:name | id>" [count]` reads the latest messages of one of your conversations.
+EOM
 # Apply onboarding profile (role, skills, tools, memory) and register tools.
 node /app/src/apply-profile.ts
 exec node /app/src/index.ts

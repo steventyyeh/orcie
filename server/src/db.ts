@@ -16,6 +16,7 @@ export function openDb(path: string) {
   `);
   // External (bridged) agents: no container; they poll an inbox over the private API. Columns added in place for existing databases.
   for (const col of ["kind text not null default 'claude'", "last_seen text", "last_reply text"]) { try { db.exec(`alter table agents add column ${col}`); } catch { /* already there */ } }
+  db.exec("create table if not exists memstate (agent text not null, conv text not null, at text not null, hash text not null, primary key (agent, conv))");
   db.exec("create table if not exists pending (agent text not null, conv text not null, primary key (agent, conv))");
   const q = (sql: string) => db.prepare(sql);
   const tx = (fn: () => void) => { db.exec("begin"); try { fn(); db.exec("commit"); } catch (e) { db.exec("rollback"); throw e; } };
@@ -42,6 +43,8 @@ export function openDb(path: string) {
       return { agents, convs };
     },
     putAgent: (a: any) => void putAgent.run(a.name, a.model, a.container, a.created, a.profile ? JSON.stringify(a.profile) : null, a.kind ?? 'claude', a.lastSeen ?? null, a.lastReply ?? null),
+    memGet: (agent: string, conv: string) => (q("select at, hash from memstate where agent = ? and conv = ?").get(agent, conv) as { at: string; hash: string } | undefined) ?? null,
+    memSet: (agent: string, conv: string, at: string, hash: string) => void q("insert into memstate (agent, conv, at, hash) values (?, ?, ?, ?) on conflict(agent, conv) do update set at = excluded.at, hash = excluded.hash").run(agent, conv, at, hash),
     addPending: (agent: string, conv: string) => void q('insert or ignore into pending (agent, conv) values (?, ?)').run(agent, conv),
     delPending: (agent: string, conv: string) => void q('delete from pending where agent = ? and conv = ?').run(agent, conv),
     loadPending: () => (q('select agent, conv from pending').all() as any[]),
