@@ -60,7 +60,8 @@ Agents no longer keep notes as files: their `CLAUDE.md` points them at `remember
 - **Edit profile** after hiring: role header, skills, team/manager and memory seed apply immediately (the harness rewrites the role header of `CLAUDE.md`); tool and resource changes need `recreate`. Managers must exist and may not form loops.
 - **Control**: Stop (cancels the running turn, clears the queue), Restart (container process), live **model change** (sent with every turn, no recreate), `recreate` (new container, same volume).
 - **Startup**: any container agent whose container is missing or built from an older image is recreated on its volume.
-- **Lay off**: needs the agent's name as confirmation; deletes container and volume, removes it from all rooms, archives its notes to `~/.orcie/memory/_retired/`; **all conversation history is kept**.
+- **Resources**: CPU, memory, disk and model per agent in one panel (`server/src/resources.ts` validates and plans, `server/src/disk.ts` does the disk work). CPU/memory use `docker update`; disk is a loop-mounted ext4 image per agent (a real limit, see OPERATIONS.md); anything that needs a restart recreates the container on the same volume after confirmation and only when the agent is idle. Values persist in the `agents.res` column and are re-applied on every recreate.
+- **Lay off**: Manage > Lay off (also in the Resources panel); needs the agent's name as confirmation and offers a workspace archive first (`~/.orcie/archives/`, aborts the lay off if the archive fails); deletes container, volume and disk image, removes it from all rooms, archives its notes to `~/.orcie/memory/_retired/`; **all conversation history is kept**. The CLI has no `--yes`: `orcie layoff <agent> --confirm <agent>`.
 
 ## 6. Message routing
 

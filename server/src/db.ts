@@ -15,7 +15,7 @@ export function openDb(path: string) {
     create virtual table if not exists messages_fts using fts5(text, conv unindexed, seq unindexed, sender unindexed, tokenize = 'porter unicode61');
   `);
   // External (bridged) agents: no container; they poll an inbox over the private API. Columns added in place for existing databases.
-  for (const col of ["kind text not null default 'claude'", "last_seen text", "last_reply text"]) { try { db.exec(`alter table agents add column ${col}`); } catch { /* already there */ } }
+  for (const col of ["kind text not null default 'claude'", "last_seen text", "last_reply text", "res text"]) { try { db.exec(`alter table agents add column ${col}`); } catch { /* already there */ } }
   for (const ddl of ["alter table messages add column addr text", "alter table conversations add column meta text", "alter table messages add column files text"]) { try { db.exec(ddl); } catch { /* already there */ } }
   db.exec("create table if not exists promises (id integer primary key autoincrement, agent text not null, text text not null, conv text, status text not null default 'active', note text, created text not null, updated text not null)");
   db.exec("create table if not exists files (id text primary key, name text not null, size integer not null, type text not null, by text not null, at text not null)");
@@ -24,7 +24,7 @@ export function openDb(path: string) {
   const q = (sql: string) => db.prepare(sql);
   const tx = (fn: () => void) => { db.exec("begin"); try { fn(); db.exec("commit"); } catch (e) { db.exec("rollback"); throw e; } };
 
-  const putAgent = q("insert into agents (name, model, container, created, profile, kind, last_seen, last_reply) values (?, ?, ?, ?, ?, ?, ?, ?) on conflict(name) do update set model = excluded.model, container = excluded.container, profile = excluded.profile, kind = excluded.kind, last_seen = excluded.last_seen, last_reply = excluded.last_reply");
+  const putAgent = q("insert into agents (name, model, container, created, profile, kind, last_seen, last_reply, res) values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(name) do update set model = excluded.model, container = excluded.container, profile = excluded.profile, kind = excluded.kind, last_seen = excluded.last_seen, last_reply = excluded.last_reply, res = excluded.res");
   const putConv = q("insert into conversations (id, kind, title, mode, created) values (?, ?, ?, ?, ?) on conflict(id) do update set title = excluded.title, mode = excluded.mode");
   const addMember = q("insert or ignore into members (conv, name) values (?, ?)");
   const addMsg = q("insert or replace into messages (conv, seq, sender, text, at, hop, activity) values (?, ?, ?, ?, ?, ?, ?)");
@@ -37,7 +37,7 @@ export function openDb(path: string) {
   return {
     loadAll() {
       const agents: Record<string, any> = {}, convs: Record<string, any> = {};
-      for (const r of q("select * from agents").all() as any[]) agents[r.name] = { name: r.name, model: r.model, container: r.container, port: 0, created: r.created, kind: r.kind ?? 'claude', ...(r.last_seen ? { lastSeen: r.last_seen } : {}), ...(r.last_reply ? { lastReply: r.last_reply } : {}), ...(r.profile ? { profile: JSON.parse(r.profile) } : {}) };
+      for (const r of q("select * from agents").all() as any[]) agents[r.name] = { name: r.name, model: r.model, container: r.container, port: 0, created: r.created, kind: r.kind ?? 'claude', ...(r.last_seen ? { lastSeen: r.last_seen } : {}), ...(r.last_reply ? { lastReply: r.last_reply } : {}), ...(r.profile ? { profile: JSON.parse(r.profile) } : {}), ...(r.res ? { res: JSON.parse(r.res) } : {}) };
       for (const r of q("select * from conversations order by created").all() as any[]) convs[r.id] = { id: r.id, kind: r.kind, title: r.title, mode: r.mode ?? undefined, members: [], messages: [], cursor: {}, ...(r.meta ? JSON.parse(r.meta) : {}) };
       for (const r of q("select * from members").all() as any[]) convs[r.conv]?.members.push(r.name);
       for (const r of q("select * from messages order by conv, seq").all() as any[])
@@ -45,7 +45,7 @@ export function openDb(path: string) {
       for (const r of q("select * from cursors").all() as any[]) if (convs[r.conv]) convs[r.conv].cursor[r.agent] = r.seq;
       return { agents, convs };
     },
-    putAgent: (a: any) => void putAgent.run(a.name, a.model, a.container, a.created, a.profile ? JSON.stringify(a.profile) : null, a.kind ?? 'claude', a.lastSeen ?? null, a.lastReply ?? null),
+    putAgent: (a: any) => void putAgent.run(a.name, a.model, a.container, a.created, a.profile ? JSON.stringify(a.profile) : null, a.kind ?? 'claude', a.lastSeen ?? null, a.lastReply ?? null, a.res ? JSON.stringify(a.res) : null),
     memGet: (agent: string, conv: string) => (q("select at, hash from memstate where agent = ? and conv = ?").get(agent, conv) as { at: string; hash: string } | undefined) ?? null,
     memSet: (agent: string, conv: string, at: string, hash: string) => void q("insert into memstate (agent, conv, at, hash) values (?, ?, ?, ?) on conflict(agent, conv) do update set at = excluded.at, hash = excluded.hash").run(agent, conv, at, hash),
     delMember: (conv: string, name: string) => void q("delete from members where conv = ? and name = ?").run(conv, name),

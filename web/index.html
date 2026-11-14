@@ -49,7 +49,13 @@ button{font:inherit;color:inherit;cursor:pointer}
 
 .fld{width:100%;box-sizing:border-box;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);padding:var(--s2) var(--s3);font:inherit;font-size:14px}
 textarea.fld{resize:vertical;min-height:64px}
-dialog.wide{width:min(640px,94vw)}dialog.wide form{max-height:86vh;overflow:auto}
+dialog.wide{width:min(640px,94vw)}
+.rrow{display:grid;grid-template-columns:90px 1fr 92px;gap:var(--s3);align-items:center;margin-top:var(--s3)}.rrow input[type=range]{width:100%;accent-color:var(--accent)}.rrow .fld{padding:var(--s1) var(--s2)}
+.ubar{height:6px;border-radius:3px;background:var(--line);overflow:hidden;margin:2px 0 0}.ubar i{display:block;height:100%;background:var(--green)}.ubar i.warn{background:var(--amber)}.ubar i.full{background:var(--badge)}
+.usage{display:grid;grid-template-columns:90px 1fr;gap:var(--s1) var(--s3);font-size:13px;color:var(--mute);margin-top:var(--s2)}
+.rnote{font-size:13px;margin-top:var(--s3);padding:var(--s2) var(--s3);border-radius:var(--r2);background:var(--mention-bg);color:var(--mention-fg)}.rnote.warn{background:#fff4d6;color:#6b4e00}
+.btn.danger{color:var(--badge);border-color:var(--badge)}.btn.danger:hover{background:var(--badge);color:#fff}
+.presets{display:flex;flex-wrap:wrap;gap:var(--s2);margin-top:var(--s2)}dialog.wide form{max-height:86vh;overflow:auto}
 .prow{display:flex;gap:var(--s3);align-items:flex-start;padding:var(--s2) 0;border-bottom:1px solid var(--line);font-size:14px}.prow .t{flex:1}.prow .t.done{color:var(--faint);text-decoration:line-through}.prow .st{font-size:11px;font-weight:600;text-transform:uppercase;color:var(--mute)}
 #chips{display:flex;flex-wrap:wrap;gap:var(--s2);padding:var(--s2) var(--s3) 0}#chips:empty{display:none}
 .fchip{display:inline-flex;align-items:center;gap:var(--s2);padding:3px 8px;border-radius:var(--r2);border:1px solid var(--line-strong);font-size:12px;background:var(--hover)}.fchip button{border:0;background:none;cursor:pointer;color:var(--mute);padding:0}
@@ -347,7 +353,7 @@ dialog.xl #wiz{display:flex;flex-direction:column;height:100%;overflow:hidden}
 </form></dialog>
 
 <dialog id="profDlg" class="wide"><form id="profForm" method="dialog">
-  <h3 id="profTitle">Edit profile</h3><p class="sub">Changes to the role, skills, team and manager apply right away. Tools and resources apply after a recreate.</p>
+  <h3 id="profTitle">Edit profile</h3><p class="sub">Changes to the role, skills, team and manager apply right away. Tool changes apply after a recreate; CPU, memory and disk are in Manage > Resources and model.</p>
   <label class="l">Role</label><input class="fld" id="pRole" maxlength="80">
   <label class="l">Summary</label><input class="fld" id="pSummary" maxlength="400">
   <label class="l">Team</label><input class="fld" id="pTeam" maxlength="60">
@@ -357,6 +363,25 @@ dialog.xl #wiz{display:flex;flex-direction:column;height:100%;overflow:hidden}
   <label class="l">Instructions</label><textarea class="fld" id="pPrompt" rows="6"></textarea>
   <label class="l">Always remember</label><textarea class="fld" id="pSeed" rows="3"></textarea>
   <div class="acts"><button type="button" class="btn" onclick="profDlg.close()">Cancel</button><button class="btn p" id="profSave">Save</button></div>
+</form></dialog>
+<dialog id="resDlg" class="wide"><form id="resForm" method="dialog">
+  <h3 id="resTitle">Resources and model</h3><p class="sub">Limits apply to this agent's container. CPU and memory change live; growing the disk is live too. Nothing is lost.</p>
+  <label class="l">Model</label><select class="fld" id="rsModel"></select>
+  <label class="l">Quick picks</label><div class="presets" id="rsPresets"></div>
+  <div class="rrow"><label class="l" style="margin:0">CPU (cores)</label><input type="range" id="rsCpuR"><input class="fld" type="number" id="rsCpu" step="0.5"></div>
+  <div class="rrow"><label class="l" style="margin:0">Memory (GB)</label><input type="range" id="rsMemR"><input class="fld" type="number" id="rsMem" step="0.5"></div>
+  <div class="rrow"><label class="l" style="margin:0">Disk (GB)</label><input type="range" id="rsDiskR"><input class="fld" type="number" id="rsDisk" step="1"></div>
+  <div class="usage" id="rsUsage"></div>
+  <div id="rsNotes"></div>
+  <div class="acts" style="justify-content:space-between"><button type="button" class="btn danger" id="rsLay">Lay off this agent…</button><span style="display:flex;gap:var(--s2)"><button type="button" class="btn" onclick="resDlg.close()">Close</button><button class="btn p" id="rsApply">Apply</button></span></div>
+</form></dialog>
+<dialog id="layDlg"><form id="layForm" method="dialog">
+  <h3 id="layTitle">Lay off</h3>
+  <p class="sub" id="laySub"></p>
+  <label style="display:flex;gap:var(--s2);align-items:center;font-size:14px;margin-top:var(--s3)"><input type="checkbox" id="layArch" checked> Save a workspace archive first (recommended)</label>
+  <div style="margin-top:var(--s2);font-size:13px"><a id="layDl" href="#" download>Download the workspace now</a></div>
+  <label class="l">Type the agent's name to confirm</label><input class="fld" id="layName" autocomplete="off">
+  <div class="acts"><button type="button" class="btn" onclick="layDlg.close()">Cancel</button><button class="btn danger" id="layGo" disabled>Lay off</button></div>
 </form></dialog>
 <dialog id="promDlg" class="wide"><form method="dialog"><h3 id="promTitle">Promises</h3><p class="sub">Commitments this agent made to people. You can close them too.</p><div id="promList"></div><div class="acts"><button class="btn">Close</button></div></form></dialog>
 
@@ -400,9 +425,9 @@ function md(src) {
 
 const api = async (path, method = "GET", body) => {
   const r = await fetch("/api" + path, { method, headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
-  const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j;
+  const j = await r.json(); if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), { info: j }); return j;
 };
-function toast(t) { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), 3500); }
+function toast(t, ms = 3500) { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), ms); }
 
 // ---- unread / busy helpers ----
 // readAt[conv] = highest message seq the user has seen; unread = messages from others after it
@@ -475,7 +500,7 @@ function drawHeader() {
   if (!room && !ro && agent) { // Manage: HR profile, promises, lay off
     const w = document.createElement("div"); w.className = "relpop"; w.innerHTML = `<button class="btn sm">Manage</button>`;
     w.firstChild.onclick = (e) => { e.stopPropagation(); if (w.querySelector(".pop")) return closePops(); closePops(); const p = document.createElement("div"); p.className = "pop"; p.dataset.pop = "1"; p.style.cssText = "top:36px;right:0;min-width:160px";
-      [["Edit profile", () => editProfile(agent)], ["Promises", () => showPromises(agent.name)], ["Remove agent", () => removeAgent(agent.name)]].forEach(([t, fn]) => { const x = document.createElement("div"); x.className = "row"; x.textContent = t; x.onclick = () => { closePops(); fn(); }; p.append(x); }); w.append(p); };
+      [["Edit profile", () => editProfile(agent)], ["Resources and model", () => showResources(agent.name)], ["Promises", () => showPromises(agent.name)], ["Lay off…", () => removeAgent(agent.name), "danger"]].forEach(([t, fn, cls]) => { const x = document.createElement("div"); x.className = "row"; if (cls) x.style.color = "var(--badge)"; x.textContent = t; x.onclick = () => { closePops(); fn(); }; p.append(x); }); w.append(p); };
     h.append(w);
   }
   Object.entries(browsingConvs()).forEach(([cid, ags]) => { if (cid !== cur) ags.forEach((a) => { const b = document.createElement("button"); b.className = "btn sm bchip"; b.textContent = `${a} is browsing`; b.title = "Open the conversation where the live browser is"; b.onclick = () => open(cid); h.append(b); }); }); // visible from any conversation
@@ -580,7 +605,7 @@ function editProfile(agent) {
   $("pManager").innerHTML = `<option value="">(none)</option>` + state.agents.filter((a) => a.name !== agent.name).map((a) => `<option value="${esc(a.name)}" ${a.name === p.manager ? "selected" : ""}>${esc(a.name)}</option>`).join("");
   $("profForm").onsubmit = async (ev) => { ev.preventDefault();
     try { const r = await api(`/agents/${encodeURIComponent(agent.name)}/profile`, "POST", { profile: { role: $("pRole").value, summary: $("pSummary").value, team: $("pTeam").value, manager: $("pManager").value, description: $("pDesc").value, responsibilities: $("pResp").value, systemPrompt: $("pPrompt").value, memorySeed: $("pSeed").value } });
-      profDlg.close(); toast(r.needsRecreate ? "Saved. Tool or resource changes apply after a recreate." : "Profile saved"); await refresh(); drawHeader(); } catch (err) { toast(err.message); } };
+      profDlg.close(); toast(r.needsRecreate ? "Saved. Tool changes apply after a recreate." : "Profile saved"); await refresh(); drawHeader(); } catch (err) { toast(err.message); } };
   profDlg.showModal();
 }
 async function showPromises(name) {
@@ -591,10 +616,50 @@ async function showPromises(name) {
       if (p.status === "active") { mk("Done", "done"); mk("Cancel", "cancelled"); } else mk("Reopen", "active"); box.append(d); }); };
   await draw(); promDlg.showModal();
 }
-async function removeAgent(name) {
-  const t = prompt(`Remove ${name}? This deletes its container and volume and removes it from every room. Conversation history is kept.\n\nType the agent name to confirm:`);
-  if (t !== name) { if (t !== null) toast("Name did not match; nothing removed"); return; }
-  try { await api(`/agents/${encodeURIComponent(name)}?confirm=${encodeURIComponent(name)}`, "DELETE"); toast(`${name} removed`); await refresh(); const first = state.conversations[0]; if (first) open(first.id); } catch (err) { toast(err.message); }
+const gb = (b) => (b / 2 ** 30).toFixed(1);
+async function showResources(name) {
+  const dlg = resDlg; $("resTitle").textContent = `Resources and model: ${name}`; let info;
+  try { info = await api(`/agents/${encodeURIComponent(name)}/resources`); } catch (err) { toast(err.message); return; }
+  const bd = info.bounds, memGb = (mb) => mb / 1024;
+  const setR = (id, min, max, step, v) => { const r = $(id + "R"), n = $(id); [r, n].forEach((x) => { x.min = min; x.max = max; x.step = step; x.value = v; }); r.oninput = () => (n.value = r.value, notes()); n.oninput = () => (r.value = n.value, notes()); };
+  $("rsModel").innerHTML = [...new Set([...info.models, info.model])].map((m) => `<option value="${esc(m)}" ${m === info.model ? "selected" : ""}>${esc(m.replace("claude-", ""))}</option>`).join("");
+  const legacy = info.res.diskGb === null, curDisk = legacy ? Math.max(5, Math.ceil(info.usage.diskUsedBytes / 2 ** 30 * 1.5) || 20) : info.res.diskGb;
+  setR("rsCpu", bd.cpusMin, bd.cpusMax, 0.5, info.res.cpus); setR("rsMem", 1, Math.floor(memGb(bd.memMaxMb) * 2) / 2, 0.5, memGb(info.res.memoryMb)); setR("rsDisk", bd.diskMinGb, bd.diskMaxGb, 1, curDisk);
+  $("rsPresets").innerHTML = ""; Object.entries(info.presets).forEach(([k, v]) => { const b = document.createElement("button"); b.type = "button"; b.className = "btn sm"; b.textContent = `${k[0].toUpperCase() + k.slice(1)}: ${v.cpus} CPU, ${memGb(v.memoryMb)} GB, ${v.diskGb} GB`;
+    b.onclick = () => { $("rsCpu").value = $("rsCpuR").value = v.cpus; $("rsMem").value = $("rsMemR").value = memGb(v.memoryMb); $("rsDisk").value = $("rsDiskR").value = v.diskGb; notes(); }; $("rsPresets").append(b); });
+  const u = info.usage, bar = (pct) => `<div class="ubar"><i class="${pct >= 99 ? "full" : pct >= 80 ? "warn" : ""}" style="width:${Math.min(100, pct)}%"></i></div>`;
+  const diskPct = !legacy && u.diskSizeBytes ? Math.round((u.diskUsedBytes / u.diskSizeBytes) * 100) : 0;
+  $("rsUsage").innerHTML = !u.running ? `<span>Usage</span><span>container is not running</span>` :
+    `<span>CPU now</span><span>${u.cpuPct}% of ${info.res.cpus} core${info.res.cpus === 1 ? "" : "s"}${bar(Math.min(100, u.cpuPct / info.res.cpus))}</span>
+     <span>Memory now</span><span>${esc(u.memory)} (${u.memoryPct}%)${bar(u.memoryPct)}</span>
+     <span>Disk now</span><span>${legacy ? `${gb(u.diskUsedBytes)} GB used, <b>no size limit yet</b>` : `${gb(u.diskUsedBytes)} of ${gb(u.diskSizeBytes)} GB (${diskPct}%)${bar(diskPct)}`}</span>`;
+  function notes() { const n = [], cpu = Number($("rsCpu").value), mem = Number($("rsMem").value), dk = Number($("rsDisk").value);
+    if (info.browser && mem < 2) n.push(["warn", "Under 2 GB the agent's browser may crash: Chromium shares this memory limit."]);
+    if (legacy) n.push(["", `Disk: this agent has no size limit yet. Applying moves its workspace into a ${dk} GB limited volume. The agent restarts once; the old volume is kept as a backup.`]);
+    else if (dk < info.res.diskGb) n.push(["warn", `Shrinking the disk restarts the agent. Data must fit (it uses ${gb(u.diskUsedBytes)} GB).`]);
+    else if (dk > info.res.diskGb) n.push(["", "Growing the disk happens live."]);
+    if (u.running && info.busy && (legacy || dk < info.res.diskGb)) n.push(["warn", "The agent is working right now; the restart waits until you stop it or it is idle."]);
+    $("rsNotes").innerHTML = n.map(([c, t]) => `<div class="rnote ${c}">${esc(t)}</div>`).join(""); return n; }
+  notes();
+  const apply = async (confirmRestart) => { const body = { cpus: Number($("rsCpu").value), memoryMb: Math.round(Number($("rsMem").value) * 1024), diskGb: Number($("rsDisk").value), model: $("rsModel").value, confirmRestart };
+    $("rsApply").disabled = true;
+    try { const r = await api(`/agents/${encodeURIComponent(name)}/resources`, "POST", body); toast(r.restarted ? `${name} updated and restarted on the same volume` : `${name} updated`); await refresh(); drawHeader(); dlg.close(); }
+    catch (err) { const j = err.info || {};
+      if (j.needsRestart && !j.busy && !confirmRestart) { if (confirm(`This restarts ${name} (same volume, nothing is lost):\n- ${j.needsRestart.join("\n- ")}\n\nContinue?`)) return apply(true); }
+      else toast(err.message); }
+    $("rsApply").disabled = false; };
+  $("resForm").onsubmit = (ev) => { ev.preventDefault(); apply(false); };
+  $("rsLay").onclick = () => { dlg.close(); removeAgent(name); };
+  dlg.showModal();
+}
+function removeAgent(name) { // lay off: type the name to confirm; offers a workspace archive first
+  $("layTitle").textContent = `Lay off ${name}`; $("laySub").textContent = `This deletes ${name}'s container and volume and removes it from every room. Conversation history is kept and its notes are archived. This cannot be undone, so keep the workspace archive.`;
+  $("layName").value = ""; $("layGo").disabled = true; $("layArch").checked = true; $("layDl").href = `/api/agents/${encodeURIComponent(name)}/archive`; $("layDl").setAttribute("download", `${name}-workspace.tar.gz`);
+  $("layName").oninput = () => ($("layGo").disabled = $("layName").value !== name);
+  $("layForm").onsubmit = async (ev) => { ev.preventDefault(); if ($("layName").value !== name) return; $("layGo").disabled = true; $("layGo").textContent = "Archiving…";
+    try { const r = await api(`/agents/${encodeURIComponent(name)}?confirm=${encodeURIComponent(name)}&archive=${$("layArch").checked ? 1 : 0}`, "DELETE"); layDlg.close(); toast(`${name} laid off${r.workspaceArchive ? `; workspace saved to ${r.workspaceArchive}` : ""}`, 8000); await refresh(); const first = state.conversations[0]; if (first) open(first.id); }
+    catch (err) { toast(err.message); } $("layGo").textContent = "Lay off"; $("layGo").disabled = $("layName").value !== name; };
+  layDlg.showModal();
 }
 
 // ---- attachments ----

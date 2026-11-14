@@ -43,7 +43,9 @@ Subscription only: there is no API key path.
 | `logs <agent> [n]`, `log <agent>` | container logs, recent turn log |
 | `restart [agent... \| --all] [--force]` | restart the agent process; waits until the agent is idle unless `--force` |
 | `recreate <agent>`, `recreate-all` | new container on the same volume (after changing auth, image or resources) |
-| `rm <agent> [--yes]` | lay off: asks you to type the name; deletes container and volume, keeps history |
+| `layoff <agent> [--confirm <agent>] [--no-archive]` | lay off: asks you to type the name (scripts pass `--confirm <agent>`); saves a workspace archive to `~/.orcie/archives/` first, then deletes container and volume, keeps history. There is no `--yes`, and `rm` is gone |
+| `set <agent> [--cpu 2] [--memory 4g] [--disk 20g] [--model <id>] [--restart-ok]` | change limits and model. CPU, memory and disk growth are live (`docker update`, online resize); the first disk limit on an old agent and any shrink restart it on the same volume and need `--restart-ok` (and an idle agent) |
+| `drop-backup <agent>` | after a disk migration the old unlimited volume `orcie-<agent>-data` is kept as a backup; this deletes it (type the name to confirm) |
 | `promises [agent]`, `search <text>`, `doctor`, `shell <agent>` | open promises, full-text search, GitHub access report, shell in a container |
 | `add-external <name>`, `link-tmux <name> <session>`, `tmux-sessions`, `dm <from> <to> <text>` | external agents, host tmux sessions, act as an agent |
 
@@ -55,3 +57,9 @@ Subscription only: there is no API key path.
 - **Browser panel blank**: use Reconnect (falls back to screenshots), or Restart browser; `orcie check` reports the browser state.
 - **Agent on an old image**: restart the server (auto-recreate) or `orcie recreate <agent>`.
 - **Port 8080 busy**: `lsof -tiTCP:8080 -sTCP:LISTEN`.
+
+## Resource limits and disk quotas
+
+Each agent has its own CPU, memory and disk limit, saved in the database and re-applied whenever the container is recreated (startup image upgrade included). UI: **Manage > Resources and model**; CLI: `orcie set`. Bounds: CPU 0.5 to the Docker VM's cores, memory 1 GB to what the VM has (max 32 GB; under 2 GB warns, the browser shares it), disk 2 GB to the VM's data disk.
+
+**Disk is enforced by the filesystem.** overlay2 on colima cannot enforce `--storage-opt size`, so every agent gets a sparse ext4 image in the Docker VM (`/var/lib/docker/orcie-disks/<agent>.img`), loop-mounted (fstab entry, so it comes back after a VM reboot; the server also re-mounts at startup) and exposed as the Docker volume `orcie-<agent>-disk`. Writes past the limit fail with ENOSPC. The server warns in the agent's DM at 80%, 95% and when full, and the panel and `orcie stats` show usage against the limit. Growing is online; shrinking needs the agent offline and is refused unless the data fits (at most 85% full). Everything goes through `colima ssh -- sudo`; on a native Linux host set `ORCIE_VM_EXEC="sudo -n"`. New agents get a limited disk from their preset (small 10, standard 20, large 40 GB; sparse, so unused space costs nothing). Agents created before this change keep an unlimited volume until you set a disk limit (`orcie set <agent> --disk 20g --restart-ok`): the workspace is copied into the new volume, verified by a manifest of every path and size, and the old volume is kept as a backup.

@@ -1,6 +1,6 @@
 import { createServer, type ServerResponse } from "node:http";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, renameSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, createWriteStream, statSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
 import { openDb } from "./db.ts";
@@ -11,7 +11,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // Control plane (POC): agents are Docker containers; conversations/rooms are persisted in a JSON file.
 // Router rule (docs/DESIGN.md §6): a conversation's messages reach every agent member's session for that conversation.
-type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; kind?: "claude" | "external" | "tmux"; lastSeen?: string; lastReply?: string };
+type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; res?: Res; kind?: "claude" | "external" | "tmux"; lastSeen?: string; lastReply?: string };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
 type FileRef = { id: string; name: string; size: number };
 type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number; to?: string[]; mentions?: string[]; files?: FileRef[] };
@@ -22,6 +22,8 @@ for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.en
 import * as tmuxBridge from "./tmux-bridge.ts";
 import { guard, wsGuard, loadSecret, agentToken } from "./guard.ts";
 import { upgrade } from "./ws-lite.ts";
+import * as disk from "./disk.ts";
+import { PRESETS as RES_PRESETS, limits, validateRes, plan as resPlan, usageLevel, parseSize, type Res } from "./resources.ts";
 import { startAgentApi } from "./agent-api.ts";
 import { addressed, wakeTargets, isSilent, isAck, STREAK_LIMIT, streakKind } from "./addressing.ts";
 import { Journal, Notes, memoryBlock, hashNotes, participants, label as convLabel } from "./memory.ts";
@@ -29,7 +31,6 @@ const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
 const CREDS = process.env.ORCIE_CREDS ?? `${process.env.HOME}/.orcie/creds`;
 const IMAGE = "orcie-agent:dev";
-const PRESETS = { small: { cpus: "1", memory: "2g" }, standard: { cpus: "2", memory: "4g" }, large: { cpus: "4", memory: "8g" } } as const;
 const NOVNC = resolvePath(process.env.ORCIE_WEB_DIR ?? `${import.meta.dirname}/../../web`, "novnc");
 const WEB = new URL("../../web/index.html", import.meta.url);
 
@@ -75,12 +76,16 @@ const SECRET_FILE = process.env.ORCIE_SECRET_FILE ?? `${process.env.HOME}/.orcie
 const SECRET = loadSecret(SECRET_FILE); // derives each agent's identity token
 const UI_PORT = Number(process.env.PORT ?? 8080), AGENT_PORT = Number(process.env.ORCIE_AGENT_PORT ?? 8081);
 const readToken = () => (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "");
-function runContainer(name: string, model: string, profile?: Profile) {
+// The agent's limits: its own saved values, or the preset named in its profile (legacy agents keep their unlimited volume until a disk limit is set).
+const effectiveRes = (a: { profile?: Profile; res?: Res }): Res => a.res ?? { cpus: RES_PRESETS[a.profile?.resources ?? "standard"].cpus, memoryMb: RES_PRESETS[a.profile?.resources ?? "standard"].memoryMb, diskGb: null };
+const volumeOf = (name: string, res: Res) => (res.diskGb === null ? `orcie-${name}-data` : disk.volumeName(name));
+function runContainer(name: string, model: string, profile?: Profile, resIn?: Res) {
   const token = readToken();
   if (!token && !existsSync(`${CREDS}/.credentials.json`)) throw new Error(`no subscription auth: run \`claude setup-token\` and save it to ${TOKEN_FILE}, or run scripts/export-login.sh`);
-  const container = `orcie-${name}`, res = PRESETS[profile?.resources ?? "standard"] ?? PRESETS.standard;
-  execFileSync("docker", ["run", "-d", "--name", container, "--restart", "unless-stopped", "--cpus", res.cpus, "--memory", res.memory,
-    "-v", `orcie-${name}-data:/data`, ...(token ? ["-e", "CLAUDE_CODE_OAUTH_TOKEN"] : ["-v", `${CREDS}:/creds`]), "-p", "127.0.0.1:0:9090",
+  const container = `orcie-${name}`, res = effectiveRes({ profile, res: resIn });
+  if (res.diskGb !== null) disk.ensureMounted(name);
+  execFileSync("docker", ["run", "-d", "--name", container, "--restart", "unless-stopped", "--cpus", String(res.cpus), "--memory", `${res.memoryMb}m`, "--memory-swap", `${res.memoryMb}m`,
+    "-v", `${volumeOf(name, res)}:/data`, ...(token ? ["-e", "CLAUDE_CODE_OAUTH_TOKEN"] : ["-v", `${CREDS}:/creds`]), "-p", "127.0.0.1:0:9090",
     "--add-host", "host.docker.internal:host-gateway",
     ...(existsSync(`${GIT_DIR}/token`) ? ["-v", `${GIT_DIR}:/gitcreds:ro`] : []),
     "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_AGENT_TOKEN=${agentToken(SECRET, name)}`, "-e", `ORCIE_SERVER=http://host.docker.internal:${AGENT_PORT}`, "-e", `ORCIE_MODEL=${model}`,
@@ -91,7 +96,7 @@ function runContainer(name: string, model: string, profile?: Profile) {
 function recreateAgent(name: string) { // new container on the same volume (memory, sessions, skills persist), e.g. after changing auth
   const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
   try { docker("rm", "-f", a.container); } catch { /* already gone */ }
-  a.container = runContainer(name, a.model, a.profile); a.port = hostPort(a.container);
+  a.container = runContainer(name, a.model, a.profile, a.res); a.port = hostPort(a.container);
   return a;
 }
 const MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"];
@@ -108,32 +113,117 @@ async function cancelAgent(name: string) {
   for (const id of active) { const c = convs[id]; if (c) { post(c, "system", `${name} was stopped by the user.`); emit({ type: "typing", conv: id, agent: name, on: false }); } }
   emit({ type: "state" }); return { stopped: name, conversations: active };
 }
+async function waitHealthy(a: Agent) { for (let i = 0; i < 40; i++) { try { if ((await harness(a, "/healthz")).ok) return; } catch { /* still starting */ } await new Promise((r) => setTimeout(r, 1000)); } }
 async function restartAgent(name: string) { // restart the container's process (same container, same volume)
   const a = agents[name]; if (!a || a.kind === "external" || a.kind === "tmux") throw new Error("only container agents can be restarted");
   await cancelAgent(name); docker("restart", a.container); a.port = hostPort(a.container);
-  for (let i = 0; i < 30; i++) { try { if ((await harness(a, "/healthz")).ok) break; } catch { /* still starting */ } await new Promise((r) => setTimeout(r, 1000)); }
-  emit({ type: "state" }); return { restarted: name };
+  await waitHealthy(a); emit({ type: "state" }); return { restarted: name };
 }
 function setModel(name: string, model: unknown) { // live: the harness gets the model on every turn, nothing is recreated
   const a = agents[name]; if (!a || a.kind === "external" || a.kind === "tmux") throw new Error("only container agents have a model setting");
   if (!validModel(model)) throw new Error("invalid model name");
   a.model = model; db.putAgent(a); emit({ type: "state" }); return { name, model };
 }
+// Workspace archive: a tar.gz of the agent's /data (workspace, memory files, browser profile minus caches), written before a lay off
+// so nothing is lost for good, or streamed to the browser as a download. Reads the volume read-only through a throwaway container.
+const ARCHIVE_DIR = process.env.ORCIE_ARCHIVE_DIR ?? `${process.env.HOME}/.orcie/archives`;
+const tarArgs = (a: Agent) => ["run", "--rm", "--user", "root", "--entrypoint", "tar", "-v", `${volumeOf(a.name, effectiveRes(a))}:/data:ro`, IMAGE, "czf", "-", "-C", "/data", "--exclude=./home/.cache", "--exclude=./home/.config/chromium/*/Cache", "--exclude=./home/.config/chromium/*/Code Cache", "."];
+function archiveWorkspace(a: Agent): Promise<{ file: string; bytes: number }> {
+  mkdirSync(ARCHIVE_DIR, { recursive: true, mode: 0o700 });
+  const file = `${ARCHIVE_DIR}/${a.name}-${new Date().toISOString().replace(/[:.]/g, "-")}.tar.gz`, out = createWriteStream(file, { mode: 0o600 });
+  return new Promise((resolve, reject) => {
+    const p = spawn("docker", tarArgs(a), { stdio: ["ignore", "pipe", "pipe"] }); let err = ""; p.stderr.on("data", (d) => (err += d)); p.stdout.pipe(out);
+    p.on("close", (code) => { out.end(() => { const bytes = statSync(file).size; if (code === 0 && bytes > 0) resolve({ file, bytes }); else { try { rmSync(file); } catch { /* none */ } reject(new Error(`could not archive the workspace (${err.trim().slice(-200) || `tar exit ${code}`}); nothing was deleted`)); } }); });
+  });
+}
 // Lay off an agent: its container and volume are deleted and it leaves every room, but all conversation history stays
-// (messages, rooms, the DM). Its long-term notes are archived, not deleted.
-function removeAgent(name: string) {
+// (messages, rooms, the DM). Its long-term notes are archived, not deleted. With archive, the workspace is saved first and the
+// lay off is aborted if that fails.
+async function removeAgent(name: string, opts: { archive?: boolean } = {}) {
   const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
+  const container = a.kind !== "external" && a.kind !== "tmux";
+  let workspaceArchive: { file: string; bytes: number } | null = null;
+  if (container && opts.archive) workspaceArchive = await archiveWorkspace(a);
   epochs.set(name, epochOf(name) + 1);
-  if (a.kind !== "external" && a.kind !== "tmux") { try { docker("rm", "-f", a.container); } catch { /* already gone */ } try { docker("volume", "rm", "-f", `orcie-${name}-data`); } catch { /* none */ } }
+  if (container) {
+    try { docker("rm", "-f", a.container); } catch { /* already gone */ }
+    if (a.res?.diskGb != null) { try { disk.destroy(name); } catch (e) { console.error(`disk cleanup for ${name}: ${e}`); } }
+    try { docker("volume", "rm", "-f", `orcie-${name}-data`); } catch { /* none */ }
+  }
   for (const c of Object.values(convs)) if (c.kind === "room" && c.members.includes(name)) { c.members = c.members.filter((n) => n !== name); db.delMember(c.id, name); post(c, "system", `${name} was removed from the team.`); }
   for (const k of [...dirty]) if (k.endsWith(`|${name}`)) dirty.delete(k);
-  pending.delete(name); db.delAgent(name); db.delMemstate(name); delete agents[name];
+  pending.delete(name); db.delAgent(name); db.delMemstate(name); delete agents[name]; diskUse.delete(name); diskLevel.delete(name);
   let archived: string | null = null;
   const nd = `${NOTES_DIR}/${name}`;
   if (existsSync(nd)) { archived = `${NOTES_DIR}/_retired/${name}-${Date.now()}`; mkdirSync(`${NOTES_DIR}/_retired`, { recursive: true, mode: 0o700 }); renameSync(nd, archived); }
   journal.rebuild(Object.values(convs)); emit({ type: "state" });
-  return { deleted: name, volumeRemoved: a.kind !== "external" && a.kind !== "tmux", notesArchivedTo: archived };
+  return { deleted: name, volumeRemoved: container, notesArchivedTo: archived, workspaceArchive: workspaceArchive?.file ?? null, workspaceArchiveBytes: workspaceArchive?.bytes ?? null };
 }
+// ---- resources: CPU, memory, disk and model per agent, one panel (GET/POST /api/agents/:name/resources) ----
+const diskUse = new Map<string, { used: number; size: number; at: number }>(), diskLevel = new Map<string, number>();
+let factsCache: { at: number; v: ReturnType<typeof disk.hostFacts> } | null = null;
+const facts = () => (factsCache && Date.now() - factsCache.at < 300_000 ? factsCache.v : (factsCache = { at: Date.now(), v: disk.hostFacts() }).v);
+const boundsNow = () => { const f = facts(); return limits(f.cpus, f.memMb, f.diskGb); };
+async function readDisk(a: Agent, res: Res) { // used/size of the agent's data. Limited volumes: the filesystem itself; legacy volumes: du of /data
+  if (res.diskGb !== null) { const [, size, used] = (await dockerAsync("exec", a.container, "df", "-B1", "--output=source,size,used", "/data")).split("\n").pop()!.trim().split(/\s+/); return { used: Number(used), size: Number(size) }; }
+  return { used: Number((await dockerAsync("exec", a.container, "du", "-sb", "/data")).split(/\s/)[0]), size: 0 };
+}
+async function resourceInfo(name: string) {
+  const a = agents[name]; if (!a || a.kind === "external" || a.kind === "tmux") throw new Error("only container agents have resource limits");
+  const res = effectiveRes(a); let usage: any = { running: false };
+  try {
+    const st = JSON.parse(await dockerAsync("stats", "--no-stream", "--format", "{{json .}}", a.container));
+    usage = { running: true, cpuPct: parseFloat(st.CPUPerc), memory: st.MemUsage, memoryPct: parseFloat(st.MemPerc) };
+    const [used] = st.MemUsage.split("/").map((x: string) => x.trim()); usage.memoryUsedMb = parseSize(used.replace("iB", ""), "mb", "m");
+    const d = await readDisk(a, res); usage.diskUsedBytes = d.used; usage.diskSizeBytes = d.size; if (res.diskGb !== null) diskUse.set(name, { ...d, at: Date.now() });
+  } catch { /* container not running */ }
+  let backup = false; if (res.diskGb !== null) { try { await dockerAsync("volume", "inspect", `orcie-${name}-data`); backup = true; } catch { /* none */ } }
+  return { name, model: a.model, models: MODELS, res, bounds: boundsNow(), presets: RES_PRESETS, preset: a.profile?.resources ?? "standard", usage, browser: a.profile?.tools.browser !== false, busy: (inflight.get(name)?.size ?? 0) > 0, legacyDisk: res.diskGb === null, backupVolume: backup ? `orcie-${name}-data` : null };
+}
+class Conflict extends Error { info: unknown; constructor(msg: string, info: unknown) { super(msg); this.info = info; } }
+async function applyResources(name: string, b: any) {
+  const a = agents[name]; if (!a || a.kind === "external" || a.kind === "tmux") throw new Error("only container agents have resource limits");
+  const cur = effectiveRes(a), { res: next, warnings } = validateRes(b, cur, boundsNow(), a.profile?.tools.browser !== false);
+  if (b.model !== undefined && !validModel(b.model)) throw new Error("invalid model name");
+  let used: number | null = null; try { used = (await readDisk(a, cur)).used; } catch { /* container down */ }
+  const p = resPlan(cur, next, used); if (p.error) throw new Error(p.error);
+  if (next.diskGb !== null && cur.diskGb === null) { const need = ((used ?? 0) * 1.1) / 2 ** 30; if (disk.vmFreeGb() < need) throw new Error(`not enough free space in the Docker VM to move the workspace (needs about ${need.toFixed(1)} GB)`); }
+  const busy = (inflight.get(name)?.size ?? 0) > 0;
+  if (p.restart.length) {
+    if (!b.confirmRestart) throw new Conflict("this change restarts the agent", { needsRestart: p.restart, busy, warnings });
+    if (busy && !b.force) throw new Conflict("the agent is working right now; wait for it to finish or stop it first", { busy: true, needsRestart: p.restart });
+  }
+  const changed: string[] = [];
+  if (b.model !== undefined && b.model !== a.model) { setModel(name, b.model); changed.push(`model ${a.model}`); }
+  if (p.restart.length) { // recreate on the same volume: stop, move or resize the disk, start again with the new limits
+    await cancelAgent(name); docker("stop", a.container);
+    try {
+      if (cur.diskGb === null) disk.migrate(name, `orcie-${name}-data`, next.diskGb!, IMAGE); else if (next.diskGb !== cur.diskGb) disk.shrink(name, next.diskGb!);
+    } catch (e) { try { docker("start", a.container); } catch { /* leave it stopped */ } throw new Error(`disk change failed, nothing was changed: ${String((e as Error).message ?? e).split("\n")[0].slice(0, 200)}`); }
+    a.res = next; recreateAgent(name); await waitHealthy(a);
+  } else {
+    if (next.cpus !== cur.cpus || next.memoryMb !== cur.memoryMb) docker("update", "--cpus", String(next.cpus), "--memory", `${next.memoryMb}m`, "--memory-swap", `${next.memoryMb}m`, a.container);
+    if (next.diskGb !== cur.diskGb && next.diskGb !== null) disk.grow(name, next.diskGb);
+    a.res = next;
+  }
+  if (next.cpus !== cur.cpus) changed.push(`${next.cpus} CPU`); if (next.memoryMb !== cur.memoryMb) changed.push(`${next.memoryMb / 1024} GB memory`); if (next.diskGb !== cur.diskGb) changed.push(`${next.diskGb} GB disk`);
+  db.putAgent(a); diskLevel.delete(name); const dm = convs[`dm:${name}`]; if (dm && changed.length) post(dm, "system", `${name}'s resources changed: ${changed.join(", ")}${p.restart.length ? " (the agent was restarted on the same volume)" : ""}.`);
+  emit({ type: "state" }); return { ...(await resourceInfo(name)), warnings, restarted: p.restart.length > 0 };
+}
+// Disk watch: ext4 refuses writes at 100% (ENOSPC), the watch tells the agent's DM at 80%, 95% and when full.
+async function diskWatch() {
+  for (const a of Object.values(agents)) {
+    if (a.kind === "external" || a.kind === "tmux" || !a.res || a.res.diskGb === null) continue;
+    try {
+      const d = await readDisk(a, a.res); diskUse.set(a.name, { ...d, at: Date.now() });
+      const lvl = usageLevel(d.used, d.size), prev = diskLevel.get(a.name) ?? 0, dm = convs[`dm:${a.name}`];
+      if (lvl > prev && dm) post(dm, "system", lvl === 100 ? `${a.name}'s disk is full (${(d.size / 2 ** 30).toFixed(0)} GB): writes now fail. Free space or raise the limit in Manage > Resources and model.` : `${a.name}'s disk is ${Math.round((d.used / d.size) * 100)}% full of ${(d.size / 2 ** 30).toFixed(0)} GB.`);
+      if (lvl !== prev && (lvl > prev || d.used / d.size < 0.75)) diskLevel.set(a.name, lvl);
+    } catch { /* container not running */ }
+  }
+}
+if (process.env.ORCIE_DISK_WATCH !== "0") setInterval(() => diskWatch().catch(() => {}), 60_000).unref();
+
 // Edit an agent's HR profile after hiring. Role text, skills, team/manager etc. apply immediately; tools and resources need a recreate.
 async function editProfile(name: string, incoming: any) {
   const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
@@ -143,17 +233,24 @@ async function editProfile(name: string, incoming: any) {
   a.profile = next; db.putAgent(a);
   if (a.kind !== "external" && a.kind !== "tmux") { try { const r = await hbrowser(a, "/profile", "POST", { profile: next }); if (!r.ok) throw new Error(String(r.status)); } catch (e) { throw new Error(`saved, but the agent could not apply it right now (${String((e as Error).message ?? e)}); restart the agent to re-apply`); } }
   emit({ type: "state" });
-  return { profile: next, needsRecreate: next.tools.browser !== old.tools.browser || next.resources !== old.resources };
+  if (next.resources !== old.resources && a.kind !== "external" && a.kind !== "tmux") { const pr = RES_PRESETS[next.resources]; await applyResources(name, { cpus: pr.cpus, memoryMb: pr.memoryMb, ...(effectiveRes(a).diskGb === null ? {} : { diskGb: pr.diskGb }) }); } // the preset is a quick pick: it changes the live limits
+  return { profile: next, needsRecreate: next.tools.browser !== old.tools.browser };
 }
-function createAgent(name: string, model: string, profile?: Profile) {
+function createAgent(name: string, model: string, profile?: Profile, want?: any) { // want: optional {cpus, memoryMb, diskGb} (diskGb: null = no size limit)
   if (!validName(name)) throw new Error("name must be lowercase letters/digits/dashes");
   if (agents[name]) throw new Error(`agent ${name} exists`);
   if (profile) { const err = managerError(name, profile.manager, (n) => agents[n]?.profile?.manager, (n) => !!agents[n]); if (err) throw new Error(err); }
-  const container = runContainer(name, model, profile);
-  agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(profile ? { profile } : {}) };
+  const pr = RES_PRESETS[profile?.resources ?? "standard"]; let diskNote = "";
+  let res: Res | undefined = validateRes(want?.diskGb === null ? { ...want, diskGb: undefined } : want, { cpus: pr.cpus, memoryMb: pr.memoryMb, diskGb: pr.diskGb }, boundsNow(), profile?.tools.browser !== false).res;
+  if (want?.diskGb === null) res = { ...res, diskGb: null };
+  try { if (res.diskGb !== null) disk.create(name, res.diskGb); } catch (e) { res = { ...res, diskGb: null }; diskNote = `could not create a size-limited disk (${String((e as Error).message ?? e).split("\n")[0].slice(0, 120)}); this agent's volume has no size limit`; }
+  let container: string;
+  try { container = runContainer(name, model, profile, res); } catch (e) { if (res?.diskGb != null) { try { disk.destroy(name); } catch { /* best effort */ } } throw e; }
+  agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(res ? { res } : {}), ...(profile ? { profile } : {}) };
   db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
   if (!existsSync(`${GIT_DIR}/token`)) post(dm, "system", `${name} has no GitHub access: the shared credential is missing. Run scripts/export-git-login.sh, then \`cli/orcie recreate ${name}\`.`);
+  if (diskNote) post(dm, "system", `${name}: ${diskNote}.`);
   if (profile) post(dm, "system", `${name} was onboarded as ${profile.role}: ${profile.skills.length} skill${profile.skills.length === 1 ? "" : "s"}, ${profile.tools.browser ? "browser enabled" : "no browser"}, ${profile.resources} resources.`);
   emit({ type: "state" });
   return agents[name];
@@ -541,12 +638,24 @@ const uiServer = createServer(async (req, res) => {
     if (req.method === "GET" && url === "/api/activity") return json(200, { busy: [...inflight].filter(([, v]) => v.size).map(([agent, v]) => ({ agent, conversations: [...v] })) });
     if (req.method === "GET" && url === "/api/stats") return json(200, await fleetStats());
     if (req.method === "GET" && url === "/api/check") { const only = new URL(req.url!, "http://x").searchParams.get("agent"); return json(200, { agents: await Promise.all(Object.values(agents).filter((a) => a.kind !== "external" && a.kind !== "tmux" && (!only || a.name === only)).map((a) => checkAgent(a))) }); }
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/resources$/)) && agents[m[1]] && (req.method === "GET" || req.method === "POST")) {
+      try { return json(200, req.method === "GET" ? await resourceInfo(m[1]) : await applyResources(m[1], b)); } catch (e) { return e instanceof Conflict ? json(409, { error: e.message, ...(e.info as object) }) : json(400, { error: String((e as Error).message ?? e) }); }
+    }
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/backup$/)) && req.method === "DELETE" && agents[m[1]]) { // frees the old unlimited volume kept after a disk migration
+      if (new URL(req.url!, "http://x").searchParams.get("confirm") !== m[1]) return json(400, { error: `confirmation required: repeat the agent's name (?confirm=${m[1]})` });
+      if (agents[m[1]].res?.diskGb == null) return json(400, { error: "this agent's only volume is its live one; nothing to drop" });
+      try { docker("volume", "rm", `orcie-${m[1]}-data`); return json(200, { dropped: `orcie-${m[1]}-data` }); } catch { return json(404, { error: "no backup volume" }); }
+    }
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/archive$/)) && req.method === "GET" && agents[m[1]] && agents[m[1]].kind !== "external" && agents[m[1]].kind !== "tmux") { // download the workspace as tar.gz
+      const a = agents[m[1]]; res.writeHead(200, { "content-type": "application/gzip", "content-disposition": `attachment; filename="${a.name}-workspace.tar.gz"`, "x-content-type-options": "nosniff" });
+      const p = spawn("docker", tarArgs(a), { stdio: ["ignore", "pipe", "ignore"] }); p.stdout.pipe(res); res.on("close", () => p.kill()); return;
+    }
     if (req.method === "GET" && url === "/api/models") return json(200, { models: MODELS });
     if ((m = url.match(/^\/api\/agents\/([^/]+)\/(cancel|restart|model)$/)) && req.method === "POST") {
       if (!agents[m[1]]) return json(404, { error: "no such agent" });
       try { return json(200, m[2] === "cancel" ? await cancelAgent(m[1]) : m[2] === "restart" ? await restartAgent(m[1]) : setModel(m[1], b.model)); } catch (e) { return json(400, { error: String(e.message ?? e) }); }
     }
-    if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5", b.profile ? clean(b.profile) : undefined));
+    if (req.method === "POST" && url === "/agents") return json(201, createAgent(b.name, b.model ?? "claude-sonnet-5-5", b.profile ? clean(b.profile) : undefined, b.resources));
     if (req.method === "POST" && url === "/dm") { // the human (UI/CLI) talking to an agent; agents use the authenticated agent listener
       if (!agents[b.to]) return json(404, { error: `no agent ${b.to}` });
       const c = convs[`dm:${b.to}`]; post(c, "user", b.text); return json(200, { reply: await deliver(c, b.to) });
@@ -555,7 +664,7 @@ const uiServer = createServer(async (req, res) => {
     if ((m = url.match(/^\/agents\/([^/]+)\/health$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/healthz"));
     if (req.method === "DELETE" && (m = url.match(/^\/(?:api\/)?agents\/([^/]+)$/)) && agents[m[1]]) { // lay off: needs the agent's name as confirmation
       if (new URL(req.url!, "http://x").searchParams.get("confirm") !== m[1]) return json(400, { error: `confirmation required: repeat the agent's name (?confirm=${m[1]})` });
-      return json(200, removeAgent(m[1]));
+      try { return json(200, await removeAgent(m[1], { archive: new URL(req.url!, "http://x").searchParams.get("archive") === "1" })); } catch (e) { return json(500, { error: String((e as Error).message ?? e) }); }
     }
     json(404, { error: "not found" });
   } catch (e) { json(500, { error: String(e instanceof Error ? e.message : e) }); }
@@ -704,11 +813,13 @@ async function fleetStats() {
   return { agents: Object.values(agents).map((a) => {
     const mine = Object.values(convs).filter((c) => participants(c).includes(a.name)), d = docker_[a.container] ?? null;
     return { name: a.name, kind: a.kind ?? "claude", model: a.model, busy: (inflight.get(a.name)?.size ?? 0) > 0, conversations: mine.length, messagesSent: mine.reduce((n, c) => n + c.messages.filter((m) => m.from === a.name).length, 0),
-      activePromises: db.listPromises(a.name, "active").length, ...(d ? { cpu: d.CPUPerc, memory: d.MemUsage, memoryPct: d.MemPerc } : {}) };
+      activePromises: db.listPromises(a.name, "active").length, ...(a.kind !== "external" && a.kind !== "tmux" ? (() => { const r = effectiveRes(a), u = diskUse.get(a.name); return { limits: { cpus: r.cpus, memoryMb: r.memoryMb, diskGb: r.diskGb }, ...(u ? { diskUsedBytes: u.used, diskSizeBytes: u.size } : {}) }; })() : {}), ...(d ? { cpu: d.CPUPerc, memory: d.MemUsage, memoryPct: d.MemPerc } : {}) };
   }) };
 }
 // On startup, any container agent whose container is missing or built from an older image is recreated on its existing volume.
 async function ensureCurrentImage() {
+  for (const a of Object.values(agents)) if (a.res?.diskGb != null) { try { disk.ensureMounted(a.name); } catch (e) { console.error(`could not mount ${a.name}'s disk: ${e}`); } }
+  diskWatch().catch(() => {});
   if (process.env.ORCIE_AUTO_RECREATE === "0") return;
   let cur = ""; try { cur = await dockerAsync("image", "inspect", "-f", "{{.Id}}", IMAGE); } catch { return; }
   for (const a of Object.values(agents)) {
