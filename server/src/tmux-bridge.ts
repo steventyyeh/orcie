@@ -1,11 +1,16 @@
 // Bridge to an existing Claude Code session running in tmux on the host (e.g. one that needs macOS tools such as Xcode).
 // Messages are typed into the pane; the reply is scraped from the pane once it goes idle. Only sessions that were
 // explicitly linked are ever touched, and the deny list keeps the manager/secretary sessions out.
+import { ORCIE_DIR } from "./env.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
-const DENY = (process.env.ORCIE_TMUX_DENY ?? "orcie-commander,secretary,commander").split(",").map((s) => s.trim()).filter(Boolean);
-const DIR = process.env.ORCIE_TMUX_DIR ?? `${process.env.HOME}/.orcie/tmux`;
+// Sessions that can never be linked, whatever ORCIE_TMUX_DENY says: the operator's secretary and commander sessions.
+// ORCIE_TMUX_DENY adds more names. `orcie-commander` used to be on the list; the user opted in to linking that one session on 2026-11-16 (docs/SECURITY.md).
+export const NEVER_LINK = ["secretary", "commander"];
+export const denyList = (extra = process.env.ORCIE_TMUX_DENY ?? "") => [...new Set([...NEVER_LINK, ...extra.split(",").map((s) => s.trim()).filter(Boolean)])];
+const DENY = denyList();
+const DIR = process.env.ORCIE_TMUX_DIR ?? `${ORCIE_DIR}/tmux`;
 const tmux = (...a: string[]) => execFileSync("tmux", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 
 export const sessionAlive = (s: string) => { try { tmux("has-session", "-t", `=${s}`); return true; } catch { return false; } };
@@ -65,12 +70,13 @@ function fromTranscript(dir: string, marker: string): { text: string; done: bool
 }
 
 const locks = new Map<string, Promise<unknown>>();
-export type TmuxTurn = { session: string; from: string; text: string; conv: string; onEvent?: (e: ToolEvent) => void };
+export type TmuxTurn = { session: string; from: string; text: string; conv: string; convFile?: string; onEvent?: (e: ToolEvent) => void }; // convFile: where the host tools read which conversation this turn belongs to
 // Types one message into the pane and resolves with the reply text ("" if the session produced nothing).
 export function turn(t: TmuxTurn): Promise<string> {
   const run = async () => {
     if (!sessionAlive(t.session)) throw new Error(`tmux session ${t.session} is not running`);
     const id = Date.now().toString(36);
+    if (t.convFile) writeFileSync(t.convFile, t.conv, { mode: 0o600 }); // turns for one session run one at a time, so this is the current conversation
     const marker = `[orcie ${id}]`;
     let body = `${marker} ${t.from} in ${t.conv}: ${t.text}`;
     if (t.text.includes("\n") || body.length > 300) { // large or multi-line input goes by file pointer (pasting long text into a TUI truncates)

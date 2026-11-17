@@ -21,6 +21,7 @@ export function openDb(path: string) {
   db.exec("create table if not exists files (id text primary key, name text not null, size integer not null, type text not null, by text not null, at text not null)");
   db.exec("create table if not exists memstate (agent text not null, conv text not null, at text not null, hash text not null, primary key (agent, conv))");
   db.exec("create table if not exists pending (agent text not null, conv text not null, primary key (agent, conv))");
+  db.exec("create table if not exists settings (k text primary key, v text not null)");
   const q = (sql: string) => db.prepare(sql);
   const tx = (fn: () => void) => { db.exec("begin"); try { fn(); db.exec("commit"); } catch (e) { db.exec("rollback"); throw e; } };
 
@@ -59,6 +60,8 @@ export function openDb(path: string) {
     addPending: (agent: string, conv: string) => void q('insert or ignore into pending (agent, conv) values (?, ?)').run(agent, conv),
     delPending: (agent: string, conv: string) => void q('delete from pending where agent = ? and conv = ?').run(agent, conv),
     loadPending: () => (q('select agent, conv from pending').all() as any[]),
+    getSetting: (k: string) => ((q("select v from settings where k = ?").get(k) as { v: string } | undefined)?.v ?? null),
+    setSetting: (k: string, v: string | null) => void (v === null ? q("delete from settings where k = ?").run(k) : q("insert into settings (k, v) values (?, ?) on conflict(k) do update set v = excluded.v").run(k, v)),
     delAgent: (name: string) => void q("delete from agents where name = ?").run(name),
     putConv: (c: any) => tx(() => { putConv.run(c.id, c.kind, c.title, c.mode ?? null, new Date().toISOString()); for (const m of c.members) addMember.run(c.id, m); if (c.origin || c.async) q("update conversations set meta = ? where id = ?").run(JSON.stringify({ ...(c.origin ? { origin: c.origin } : {}), ...(c.async ? { async: true } : {}) }), c.id); }),
     addMsg: (conv: string, m: any) => tx(() => {

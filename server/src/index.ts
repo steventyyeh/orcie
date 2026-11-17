@@ -11,7 +11,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // Control plane (POC): agents are Docker containers; conversations/rooms are persisted in a JSON file.
 // Router rule (docs/DESIGN.md §6): a conversation's messages reach every agent member's session for that conversation.
-type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; res?: Res; kind?: "claude" | "external" | "tmux"; lastSeen?: string; lastReply?: string };
+type Agent = { name: string; model: string; container: string; port: number; created: string; profile?: Profile; res?: Res; kind?: "claude" | "external" | "tmux"; lastSeen?: string; lastReply?: string; canHire?: boolean };
 type Item = { id: string; name: string; input: string; result?: string; ok?: boolean };
 type FileRef = { id: string; name: string; size: number };
 type Msg = { seq: number; from: string; text: string; at: string; activity?: Item[]; hop?: number; to?: string[]; mentions?: string[]; files?: FileRef[] };
@@ -23,14 +23,16 @@ import * as tmuxBridge from "./tmux-bridge.ts";
 import { guard, wsGuard, loadSecret, agentToken } from "./guard.ts";
 import { upgrade } from "./ws-lite.ts";
 import * as disk from "./disk.ts";
+import { ORCIE_DIR, PREFIX } from "./env.ts";
 import { PRESETS as RES_PRESETS, limits, validateRes, plan as resPlan, usageLevel, parseSize, type Res } from "./resources.ts";
 import { startAgentApi } from "./agent-api.ts";
+import { installHostTools, removeHostTools, hostToolsDir } from "./host-tools.ts";
 import { addressed, wakeTargets, isSilent, isAck, STREAK_LIMIT, streakKind } from "./addressing.ts";
 import { Journal, Notes, memoryBlock, hashNotes, participants, label as convLabel } from "./memory.ts";
 const STORE = process.env.ORCIE_STORE ?? "agents.json";
 const STATE = process.env.ORCIE_STATE ?? "state.json";
-const CREDS = process.env.ORCIE_CREDS ?? `${process.env.HOME}/.orcie/creds`;
-const IMAGE = "orcie-agent:dev";
+const CREDS = process.env.ORCIE_CREDS ?? `${ORCIE_DIR}/creds`;
+const IMAGE = `${PREFIX}-agent:dev`;
 const NOVNC = resolvePath(process.env.ORCIE_WEB_DIR ?? `${import.meta.dirname}/../../web`, "novnc");
 const WEB = new URL("../../web/index.html", import.meta.url);
 
@@ -70,24 +72,24 @@ const emit = (e: unknown) => clients.forEach((c) => c.write(`data: ${JSON.string
 // Auth for agent containers (never an API key). Preferred: a long-lived subscription token from `claude setup-token`
 // stored in ~/.orcie/token (does not rotate, safe to share). Fallback: a copy of the host login (scripts/export-login.sh),
 // which can go stale when the host or another container refreshes the shared refresh token.
-const TOKEN_FILE = process.env.ORCIE_TOKEN_FILE ?? `${process.env.HOME}/.orcie/token`;
-const GIT_DIR = process.env.ORCIE_GIT_DIR ?? `${process.env.HOME}/.orcie/git`; // shared git credential (token file), mounted read-only into every agent
-const SECRET_FILE = process.env.ORCIE_SECRET_FILE ?? `${process.env.HOME}/.orcie/server-secret`;
+const TOKEN_FILE = process.env.ORCIE_TOKEN_FILE ?? `${ORCIE_DIR}/token`;
+const GIT_DIR = process.env.ORCIE_GIT_DIR ?? `${ORCIE_DIR}/git`; // shared git credential (token file), mounted read-only into every agent
+const SECRET_FILE = process.env.ORCIE_SECRET_FILE ?? `${ORCIE_DIR}/server-secret`;
 const SECRET = loadSecret(SECRET_FILE); // derives each agent's identity token
 const UI_PORT = Number(process.env.PORT ?? 8080), AGENT_PORT = Number(process.env.ORCIE_AGENT_PORT ?? 8081);
 const readToken = () => (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "");
 // The agent's limits: its own saved values, or the preset named in its profile (legacy agents keep their unlimited volume until a disk limit is set).
 const effectiveRes = (a: { profile?: Profile; res?: Res }): Res => a.res ?? { cpus: RES_PRESETS[a.profile?.resources ?? "standard"].cpus, memoryMb: RES_PRESETS[a.profile?.resources ?? "standard"].memoryMb, diskGb: null };
-const volumeOf = (name: string, res: Res) => (res.diskGb === null ? `orcie-${name}-data` : disk.volumeName(name));
-function runContainer(name: string, model: string, profile?: Profile, resIn?: Res) {
+const volumeOf = (name: string, res: Res) => (res.diskGb === null ? `${PREFIX}-${name}-data` : disk.volumeName(name));
+function runContainer(name: string, model: string, profile?: Profile, resIn?: Res, canHire = false) { // canHire: the starter HR agent; it is not given the shared GitHub credential
   const token = readToken();
   if (!token && !existsSync(`${CREDS}/.credentials.json`)) throw new Error(`no subscription auth: run \`claude setup-token\` and save it to ${TOKEN_FILE}, or run scripts/export-login.sh`);
-  const container = `orcie-${name}`, res = effectiveRes({ profile, res: resIn });
+  const container = `${PREFIX}-${name}`, res = effectiveRes({ profile, res: resIn });
   if (res.diskGb !== null) disk.ensureMounted(name);
   execFileSync("docker", ["run", "-d", "--name", container, "--restart", "unless-stopped", "--cpus", String(res.cpus), "--memory", `${res.memoryMb}m`, "--memory-swap", `${res.memoryMb}m`,
     "-v", `${volumeOf(name, res)}:/data`, ...(token ? ["-e", "CLAUDE_CODE_OAUTH_TOKEN"] : ["-v", `${CREDS}:/creds`]), "-p", "127.0.0.1:0:9090",
-    "--add-host", "host.docker.internal:host-gateway",
-    ...(existsSync(`${GIT_DIR}/token`) ? ["-v", `${GIT_DIR}:/gitcreds:ro`] : []),
+    "--add-host", "host.docker.internal:host-gateway", "--label", `orcie.stack=${PREFIX}`,
+    ...(!canHire && existsSync(`${GIT_DIR}/token`) ? ["-v", `${GIT_DIR}:/gitcreds:ro`] : []),
     "-e", `AGENT_NAME=${name}`, "-e", `ORCIE_AGENT_TOKEN=${agentToken(SECRET, name)}`, "-e", `ORCIE_SERVER=http://host.docker.internal:${AGENT_PORT}`, "-e", `ORCIE_MODEL=${model}`,
     ...(profile ? ["-e", `ORCIE_PROFILE=${Buffer.from(JSON.stringify(profile)).toString("base64")}`] : []), IMAGE],
     { encoding: "utf8", env: { ...process.env, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) } }); // token passed by env, not on the command line
@@ -96,7 +98,7 @@ function runContainer(name: string, model: string, profile?: Profile, resIn?: Re
 function recreateAgent(name: string) { // new container on the same volume (memory, sessions, skills persist), e.g. after changing auth
   const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
   try { docker("rm", "-f", a.container); } catch { /* already gone */ }
-  a.container = runContainer(name, a.model, a.profile, a.res); a.port = hostPort(a.container);
+  a.container = runContainer(name, a.model, a.profile, a.res, a.canHire); a.port = hostPort(a.container);
   return a;
 }
 const MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"];
@@ -126,7 +128,7 @@ function setModel(name: string, model: unknown) { // live: the harness gets the 
 }
 // Workspace archive: a tar.gz of the agent's /data (workspace, memory files, browser profile minus caches), written before a lay off
 // so nothing is lost for good, or streamed to the browser as a download. Reads the volume read-only through a throwaway container.
-const ARCHIVE_DIR = process.env.ORCIE_ARCHIVE_DIR ?? `${process.env.HOME}/.orcie/archives`;
+const ARCHIVE_DIR = process.env.ORCIE_ARCHIVE_DIR ?? `${ORCIE_DIR}/archives`;
 const tarArgs = (a: Agent) => ["run", "--rm", "--user", "root", "--entrypoint", "tar", "-v", `${volumeOf(a.name, effectiveRes(a))}:/data:ro`, IMAGE, "czf", "-", "-C", "/data", "--exclude=./home/.cache", "--exclude=./home/.config/chromium/*/Cache", "--exclude=./home/.config/chromium/*/Code Cache", "."];
 function archiveWorkspace(a: Agent): Promise<{ file: string; bytes: number }> {
   mkdirSync(ARCHIVE_DIR, { recursive: true, mode: 0o700 });
@@ -142,16 +144,18 @@ function archiveWorkspace(a: Agent): Promise<{ file: string; bytes: number }> {
 async function removeAgent(name: string, opts: { archive?: boolean } = {}) {
   const a = agents[name]; if (!a) throw new Error(`no agent ${name}`);
   const container = a.kind !== "external" && a.kind !== "tmux";
+  if (a.canHire) { db.setSetting("hirers", JSON.stringify(hirerNames().filter((n) => n !== name))); if (name === HR_NAME) db.setSetting("hr-declined", new Date().toISOString()); } // removed on purpose: setup will not bring it back
   let workspaceArchive: { file: string; bytes: number } | null = null;
   if (container && opts.archive) workspaceArchive = await archiveWorkspace(a);
   epochs.set(name, epochOf(name) + 1);
   if (container) {
     try { docker("rm", "-f", a.container); } catch { /* already gone */ }
     if (a.res?.diskGb != null) { try { disk.destroy(name); } catch (e) { console.error(`disk cleanup for ${name}: ${e}`); } }
-    try { docker("volume", "rm", "-f", `orcie-${name}-data`); } catch { /* none */ }
+    try { docker("volume", "rm", "-f", `${PREFIX}-${name}-data`); } catch { /* none */ }
   }
   for (const c of Object.values(convs)) if (c.kind === "room" && c.members.includes(name)) { c.members = c.members.filter((n) => n !== name); db.delMember(c.id, name); post(c, "system", `${name} was removed from the team.`); }
   for (const k of [...dirty]) if (k.endsWith(`|${name}`)) dirty.delete(k);
+  if (a.kind === "tmux") removeHostTools(name);
   pending.delete(name); db.delAgent(name); db.delMemstate(name); delete agents[name]; diskUse.delete(name); diskLevel.delete(name);
   let archived: string | null = null;
   const nd = `${NOTES_DIR}/${name}`;
@@ -177,8 +181,8 @@ async function resourceInfo(name: string) {
     const [used] = st.MemUsage.split("/").map((x: string) => x.trim()); usage.memoryUsedMb = parseSize(used.replace("iB", ""), "mb", "m");
     const d = await readDisk(a, res); usage.diskUsedBytes = d.used; usage.diskSizeBytes = d.size; if (res.diskGb !== null) diskUse.set(name, { ...d, at: Date.now() });
   } catch { /* container not running */ }
-  let backup = false; if (res.diskGb !== null) { try { await dockerAsync("volume", "inspect", `orcie-${name}-data`); backup = true; } catch { /* none */ } }
-  return { name, model: a.model, models: MODELS, res, bounds: boundsNow(), presets: RES_PRESETS, preset: a.profile?.resources ?? "standard", usage, browser: a.profile?.tools.browser !== false, busy: (inflight.get(name)?.size ?? 0) > 0, legacyDisk: res.diskGb === null, backupVolume: backup ? `orcie-${name}-data` : null };
+  let backup = false; if (res.diskGb !== null) { try { await dockerAsync("volume", "inspect", `${PREFIX}-${name}-data`); backup = true; } catch { /* none */ } }
+  return { name, model: a.model, models: MODELS, res, bounds: boundsNow(), presets: RES_PRESETS, preset: a.profile?.resources ?? "standard", usage, browser: a.profile?.tools.browser !== false, busy: (inflight.get(name)?.size ?? 0) > 0, legacyDisk: res.diskGb === null, backupVolume: backup ? `${PREFIX}-${name}-data` : null };
 }
 class Conflict extends Error { info: unknown; constructor(msg: string, info: unknown) { super(msg); this.info = info; } }
 async function applyResources(name: string, b: any) {
@@ -198,7 +202,7 @@ async function applyResources(name: string, b: any) {
   if (p.restart.length) { // recreate on the same volume: stop, move or resize the disk, start again with the new limits
     await cancelAgent(name); docker("stop", a.container);
     try {
-      if (cur.diskGb === null) disk.migrate(name, `orcie-${name}-data`, next.diskGb!, IMAGE); else if (next.diskGb !== cur.diskGb) disk.shrink(name, next.diskGb!);
+      if (cur.diskGb === null) disk.migrate(name, `${PREFIX}-${name}-data`, next.diskGb!, IMAGE); else if (next.diskGb !== cur.diskGb) disk.shrink(name, next.diskGb!);
     } catch (e) { try { docker("start", a.container); } catch { /* leave it stopped */ } throw new Error(`disk change failed, nothing was changed: ${String((e as Error).message ?? e).split("\n")[0].slice(0, 200)}`); }
     a.res = next; recreateAgent(name); await waitHealthy(a);
   } else {
@@ -236,7 +240,7 @@ async function editProfile(name: string, incoming: any) {
   if (next.resources !== old.resources && a.kind !== "external" && a.kind !== "tmux") { const pr = RES_PRESETS[next.resources]; await applyResources(name, { cpus: pr.cpus, memoryMb: pr.memoryMb, ...(effectiveRes(a).diskGb === null ? {} : { diskGb: pr.diskGb }) }); } // the preset is a quick pick: it changes the live limits
   return { profile: next, needsRecreate: next.tools.browser !== old.tools.browser };
 }
-function createAgent(name: string, model: string, profile?: Profile, want?: any) { // want: optional {cpus, memoryMb, diskGb} (diskGb: null = no size limit)
+function createAgent(name: string, model: string, profile?: Profile, want?: any, opts: { canHire?: boolean } = {}) { // want: optional {cpus, memoryMb, diskGb} (diskGb: null = no size limit)
   if (!validName(name)) throw new Error("name must be lowercase letters/digits/dashes");
   if (agents[name]) throw new Error(`agent ${name} exists`);
   if (profile) { const err = managerError(name, profile.manager, (n) => agents[n]?.profile?.manager, (n) => !!agents[n]); if (err) throw new Error(err); }
@@ -245,8 +249,8 @@ function createAgent(name: string, model: string, profile?: Profile, want?: any)
   if (want?.diskGb === null) res = { ...res, diskGb: null };
   try { if (res.diskGb !== null) disk.create(name, res.diskGb); } catch (e) { res = { ...res, diskGb: null }; diskNote = `could not create a size-limited disk (${String((e as Error).message ?? e).split("\n")[0].slice(0, 120)}); this agent's volume has no size limit`; }
   let container: string;
-  try { container = runContainer(name, model, profile, res); } catch (e) { if (res?.diskGb != null) { try { disk.destroy(name); } catch { /* best effort */ } } throw e; }
-  agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(res ? { res } : {}), ...(profile ? { profile } : {}) };
+  try { container = runContainer(name, model, profile, res, opts.canHire); } catch (e) { if (res?.diskGb != null) { try { disk.destroy(name); } catch { /* best effort */ } } throw e; }
+  agents[name] = { name, model, container, port: hostPort(container), created: new Date().toISOString(), ...(res ? { res } : {}), ...(profile ? { profile } : {}), ...(opts.canHire ? { canHire: true } : {}) };
   db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
   if (!existsSync(`${GIT_DIR}/token`)) post(dm, "system", `${name} has no GitHub access: the shared credential is missing. Run scripts/export-git-login.sh, then \`cli/orcie recreate ${name}\`.`);
@@ -262,7 +266,7 @@ function ensureConv(id: string, kind: Conv["kind"], title: string, members: stri
   return convs[id];
 }
 const journal = new Journal(); journal.rebuild(Object.values(convs)); // long-term memory: derived from stored history on every start
-const FILES_DIR = process.env.ORCIE_FILES_DIR ?? `${process.env.HOME}/.orcie/files`;
+const FILES_DIR = process.env.ORCIE_FILES_DIR ?? `${ORCIE_DIR}/files`;
 const MAX_FILE = 25 * 1024 * 1024;
 const IMAGE_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 function saveFile(name: unknown, b64: unknown, by: string): FileRef {
@@ -276,7 +280,7 @@ function saveFile(name: unknown, b64: unknown, by: string): FileRef {
 const fileRefs = (ids: unknown): FileRef[] => (Array.isArray(ids) ? ids : []).slice(0, 10).map((id) => db.getFile(String(id))).filter(Boolean).map((f: any) => ({ id: f.id, name: f.name, size: f.size }));
 // An agent may read a file only if it is attached to a message in a conversation the agent takes part in (or it uploaded it).
 const agentCanRead = (who: string, id: string) => db.getFile(id)?.by === who || Object.values(convs).some((c) => participants(c).includes(who) && c.messages.some((m) => m.files?.some((f) => f.id === id)));
-const NOTES_DIR = process.env.ORCIE_MEMORY_DIR ?? `${process.env.HOME}/.orcie/memory`;
+const NOTES_DIR = process.env.ORCIE_MEMORY_DIR ?? `${ORCIE_DIR}/memory`;
 const notes = new Notes(NOTES_DIR);
 function post(c: Conv, from: string, text: string, activity?: Item[], hop?: number, files?: FileRef[]) {
   const m: Msg = { seq: (c.messages.at(-1)?.seq ?? 0) + 1, from, text, at: new Date().toISOString(), ...(activity?.length ? { activity } : {}), ...(hop !== undefined ? { hop } : {}), ...(files?.length ? { files } : {}) };
@@ -359,6 +363,8 @@ function createTmuxAgent(name: string, session: string) {
   if (Object.values(agents).some((a) => a.kind === "tmux" && a.container === session)) throw new Error(`session ${session} is already linked`);
   agents[name] = { name, model: "host-tmux", container: session, port: 0, created: new Date().toISOString(), kind: "tmux" }; db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
+  const tools = installHostTools(name, SECRET, AGENT_PORT);
+  post(dm, "system", `${name}'s orcie tools (remember, recall, read_room, send_message, promise, share_file, fetch_file, orcie-dm) are in ${tools.bin}; it uses its own agent token.`);
   post(dm, "system", `${name} is linked to the tmux session "${session}" on the host. Messages are typed into that session and its reply is read back from its Claude transcript when it finishes. It runs on the Mac as you, outside any container.`);
   emit({ type: "state" }); return agentView(agents[name]);
 }
@@ -376,7 +382,7 @@ async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
     let text = fmtMsgs(unseen);
     if (c.kind === "room") text = `(Orcie chat room "${c.title}", members: user, ${c.members.join(", ")}. Reply as a normal chat message, or exactly NO_REPLY if you have nothing to add.)\n${text}`;
     else if (c.id.includes("+")) text += "\n\n(If this needs no response, reply exactly NO_REPLY.)";
-    const reply = (await tmuxBridge.turn({ session: agents[agent].container, from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conv: c.id, onEvent })).trim();
+    const reply = (await tmuxBridge.turn({ session: agents[agent].container, from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conv: c.id, convFile: `${hostToolsDir(agent)}/conv`, onEvent })).trim();
     if (epochOf(agent) !== ep) return null; // stopped by the user
     c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
     if (reply && !isSilent(reply)) { const m = post(c, agent, reply, items, hop); agents[agent].lastReply = m.at; db.putAgent(agents[agent]); route(c, m); }
@@ -509,12 +515,13 @@ function route(c: Conv, m: Msg) {
 // ---- onboarding (Agent HR) ----
 // A tool-less Claude call interviews the manager about the agent's purpose, then drafts the profile.
 const clean = cleanProfile;
+const PROFILE_KEYS = `role (short title), summary (one sentence), systemPrompt (markdown instructions to the agent in second person: duties, workflow, tone, boundaries), tools ({"browser": boolean}), skills (0-5 items of {name (kebab-case), description (when to use it), instructions (markdown steps)}), memorySeed (markdown facts the agent should always remember), resources ("small" | "standard" | "large"), greeting (one sentence the agent says when introduced), team (team name, only if mentioned), manager (an existing agent it reports to, only if mentioned), responsibilities (0-8 short strings), description (one short paragraph for the agent directory).`; // shared with the starter HR agent below
 const hrPrompt = (name: string, model: string, history: { role: string; text: string }[], current: Profile | null) =>
   `You are the HR onboarding specialist for an AI-agent platform. Each agent is a Claude CLI instance in its own Docker container with a shell, file access, persistent memory, an optional headless-browser tool (Playwright), and optional skills (SKILL.md playbooks). You are co-designing the configuration of a new agent named "${name}" (model ${model}) with the manager, through an ongoing conversation. You maintain a draft profile that the manager sees live next to the chat.
 
 Each turn:
 1. Reply to the manager in 1-4 short sentences: either ask ONE clarifying question (purpose, typical tasks, systems/sites/tools, tone, boundaries, what success looks like), or say concretely what you changed and why. Do not repeat the whole profile in the chat.
-2. As soon as you can propose anything (after the first answer at the latest), or whenever you change something, end your reply with the COMPLETE updated profile in one \`\`\`json block with keys: role (short title), summary (one sentence), systemPrompt (markdown instructions to the agent in second person: duties, workflow, tone, boundaries), tools ({"browser": boolean}), skills (0-5 items of {name (kebab-case), description (when to use it), instructions (markdown steps)}), memorySeed (markdown facts the agent should always remember), resources ("small" | "standard" | "large"), greeting (one sentence the agent says when introduced), team (team name, only if mentioned), manager (an existing agent it reports to, only if mentioned), responsibilities (0-8 short strings), description (one short paragraph for the agent directory). Omit the block only while you still know nothing about the agent's purpose.
+2. As soon as you can propose anything (after the first answer at the latest), or whenever you change something, end your reply with the COMPLETE updated profile in one \`\`\`json block with keys: ${PROFILE_KEYS} Omit the block only while you still know nothing about the agent's purpose.
 3. The manager may edit the profile by hand between turns. The current profile below is the source of truth: keep their edits unless they ask you to change them.
 
 Current profile: ${current ? JSON.stringify(current) : "(none yet)"}
@@ -583,13 +590,8 @@ const uiServer = createServer(async (req, res) => {
       if (!/^[a-z][a-z0-9-]{0,30}$/.test(b.name ?? "")) return json(400, { error: "invalid name" });
       return json(200, await onboardingTurn(b.name, b.model ?? "claude-sonnet-5-5", Array.isArray(b.history) ? b.history : [], b.profile ?? null));
     }
-    if (req.method === "POST" && url === "/api/rooms") {
-      const members: string[] = (b.members ?? []).filter((n: string) => agents[n]);
-      const title = String(b.title ?? "").trim(); if (!title) return json(400, { error: "title required" });
-      const id = `room:${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-      if (convs[id]) return json(409, { error: "room exists" });
-      const c = ensureConv(id, "room", title, members); c.mode = b.mode === "sequential" ? "sequential" : "parallel"; db.putConv(c); emit({ type: "state" }); return json(201, view(c));
-    }
+    if (req.method === "POST" && url === "/api/rooms") { const r = makeRoom(b.title, b.members, b.mode); return r.conv ? json(201, view(r.conv)) : json(r.code, { error: r.error }); }
+    if (req.method === "POST" && url === "/api/starter-hr") { try { return json(200, await ensureStarterHr(b.force === true)); } catch (e) { return json(500, { error: String((e as Error).message ?? e).split("\n")[0].slice(0, 300) }); } }
     if ((m = url.match(/^\/api\/rooms\/([^/]+)\/mode$/)) && req.method === "POST") {
       const c = convs[decodeURIComponent(m[1])]; if (!c || c.kind !== "room") return json(404, { error: "not found" });
       c.mode = b.mode === "sequential" ? "sequential" : "parallel"; db.putConv(c); emit({ type: "state" }); return json(200, view(c));
@@ -644,7 +646,7 @@ const uiServer = createServer(async (req, res) => {
     if ((m = url.match(/^\/api\/agents\/([^/]+)\/backup$/)) && req.method === "DELETE" && agents[m[1]]) { // frees the old unlimited volume kept after a disk migration
       if (new URL(req.url!, "http://x").searchParams.get("confirm") !== m[1]) return json(400, { error: `confirmation required: repeat the agent's name (?confirm=${m[1]})` });
       if (agents[m[1]].res?.diskGb == null) return json(400, { error: "this agent's only volume is its live one; nothing to drop" });
-      try { docker("volume", "rm", `orcie-${m[1]}-data`); return json(200, { dropped: `orcie-${m[1]}-data` }); } catch { return json(404, { error: "no backup volume" }); }
+      try { docker("volume", "rm", `${PREFIX}-${m[1]}-data`); return json(200, { dropped: `${PREFIX}-${m[1]}-data` }); } catch { return json(404, { error: "no backup volume" }); }
     }
     if ((m = url.match(/^\/api\/agents\/([^/]+)\/archive$/)) && req.method === "GET" && agents[m[1]] && agents[m[1]].kind !== "external" && agents[m[1]].kind !== "tmux") { // download the workspace as tar.gz
       const a = agents[m[1]]; res.writeHead(200, { "content-type": "application/gzip", "content-disposition": `attachment; filename="${a.name}-workspace.tar.gz"`, "x-content-type-options": "nosniff" });
@@ -721,9 +723,75 @@ function findConv(who: string, ref: string) {
   const r = ref.trim().replace(/^#/, "").toLowerCase();
   return mine(who).find((c) => c.id.toLowerCase() === ref.trim().toLowerCase() || (c.kind === "room" && c.title.toLowerCase() === r) || convLabel(c, who).toLowerCase() === ref.trim().toLowerCase());
 }
+// ---- starter HR agent ----
+// `orcie setup` creates one agent, "hr", that helps the user hire and configure the rest of the team. It gets exactly two extra powers, through
+// the `hire` tool: create an agent from a profile, and create a room. It cannot lay off or change anyone, and its container is not given the
+// shared GitHub credential. The flag lives in the settings table (not in a profile), so no profile edit can grant it to another agent.
+const HR_NAME = "hr", HR_MAX_AGENTS = 30, HR_HIRES_PER_HOUR = 10;
+const hirerNames = (): string[] => { try { return JSON.parse(db.getSetting("hirers") ?? "[]"); } catch { return []; } };
+for (const n of hirerNames()) if (agents[n] && (agents[n].kind ?? "claude") === "claude") agents[n].canHire = true;
+const hireTimes: number[] = [];
+const hrProfile = (): Profile => cleanProfile({
+  role: "HR: hires and configures agents", summary: "Interviews you about the team you need, proposes a profile for each agent, and creates it.",
+  tools: { browser: false }, resources: "small",
+  greeting: "Hi, I'm HR. I help you build your team of agents.",
+  description: "Starter agent. Helps the user hire and configure other agents and rooms.",
+  responsibilities: ["Find out what the user wants each agent to do", "Propose a profile and get the user's OK", "Create the agent with the hire tool", "Suggest rooms for agents that should work together"],
+  systemPrompt: `You are the HR specialist of this orcie installation. You help the user build a team of AI agents. Each agent is a Claude CLI instance in its own Docker container with a shell, file access, persistent memory, an optional headless browser, and optional skills (SKILL.md playbooks).
+
+How you work:
+1. Ask ONE short question at a time: the agent's purpose, its typical tasks, the systems or sites it must use, tone, boundaries, and what success looks like. Do not interrogate; after the first answer or two, propose something.
+2. Describe the proposed agent in plain language (name, role, what it will do, browser yes/no, size small/standard/large) and ask for the user's OK. Keep your chat replies to a few sentences.
+3. Once the user agrees, write the profile as JSON to a file in /data/workspace and create the agent: \`hire new <name> < profile.json\`. Optional: \`hire new <name> --model <model> < profile.json\` (default claude-sonnet-5-5). Names are lowercase letters, digits and dashes, starting with a letter.
+   The profile JSON has the keys: ${PROFILE_KEYS} Use "resources": "standard" unless the agent needs less or more.
+4. \`hire list\` shows the agents that exist. \`hire room "<title>" <member> <member>...\` creates a room (add "--sequential" for one-at-a-time replies). A "manager" in a profile must be an existing agent.
+5. After creating something, tell the user it is ready and that they can open the agent's DM from the sidebar.
+
+Limits you must respect: you can create agents and rooms, nothing else. You cannot lay off, delete or reconfigure agents; if the user wants that, tell them to use the agent's settings in the web UI. Never ask the user for passwords, tokens or API keys, and never put secrets into a profile. If the user wants to change an agent later, point them to its settings, or create a replacement.`,
+});
+function makeRoom(title: string, memberNames: unknown, mode?: unknown) {
+  const members: string[] = (Array.isArray(memberNames) ? memberNames : []).filter((n: string) => agents[n]);
+  title = String(title ?? "").trim(); if (!title) return { code: 400, error: "title required" };
+  const id = `room:${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  if (convs[id]) return { code: 409, error: "room exists" };
+  const c = ensureConv(id, "room", title, members); c.mode = mode === "sequential" ? "sequential" : "parallel"; db.putConv(c); emit({ type: "state" });
+  return { code: 201, conv: c };
+}
+function hrHire(who: string, b: any): { code: number; body: unknown } {
+  const cut = Date.now() - 3_600_000; while (hireTimes.length && hireTimes[0] < cut) hireTimes.shift();
+  if (hireTimes.length >= HR_HIRES_PER_HOUR) return { code: 429, body: { error: `limit reached: at most ${HR_HIRES_PER_HOUR} hires per hour` } };
+  if (Object.keys(agents).length >= HR_MAX_AGENTS) return { code: 400, body: { error: `limit reached: ${HR_MAX_AGENTS} agents` } };
+  if (!validName(b.name)) return { code: 400, body: { error: "name must start with a lowercase letter and use only lowercase letters, digits and dashes (max 31)" } };
+  if (agents[b.name]) return { code: 409, body: { error: `agent ${b.name} already exists` } };
+  const model = b.model ?? "claude-sonnet-5-5"; if (!validModel(model) || !MODELS.includes(model)) return { code: 400, body: { error: `model must be one of: ${MODELS.join(", ")}` } };
+  if (!b.profile || typeof b.profile !== "object") return { code: 400, body: { error: "profile (a JSON object) required" } };
+  const profile = cleanProfile(b.profile); // validated like every other hire; resources can only be a preset, never custom numbers
+  try { createAgent(b.name, model, profile); } catch (e) { return { code: 400, body: { error: String((e as Error).message ?? e).split("\n")[0].slice(0, 300) } }; }
+  hireTimes.push(Date.now());
+  const dm = convs[`dm:${b.name}`]; if (dm) post(dm, "system", `${b.name} was hired by ${who}.`);
+  return { code: 200, body: { text: `hired ${b.name} (${profile.role}, ${model}, ${profile.resources}). Its DM is in the sidebar; it needs a few seconds to start.` } };
+}
+async function ensureStarterHr(force: boolean): Promise<{ status: string; message?: string }> {
+  const ex = agents[HR_NAME];
+  if (ex) return ex.canHire ? { status: "exists" } : { status: "name-taken", message: `an agent named "${HR_NAME}" already exists and is not the starter HR agent; it was left alone` };
+  if (db.getSetting("hr-declined") && !force) return { status: "declined", message: "the starter HR agent was laid off on purpose; run `orcie setup --hr` to bring it back" };
+  createAgent(HR_NAME, "claude-sonnet-5-5", hrProfile(), undefined, { canHire: true });
+  db.setSetting("hirers", JSON.stringify([...new Set([...hirerNames(), HR_NAME])])); db.setSetting("hr-declined", null);
+  const dm = convs[`dm:${HR_NAME}`];
+  if (dm) { const m = post(dm, HR_NAME, "Hi, I'm HR. I help you build your team of agents, and I'll set each one up for you. What team do you want to build?"); dm.cursor[HR_NAME] = m.seq; db.setCursor(dm.id, HR_NAME, m.seq); }
+  await waitHealthy(agents[HR_NAME]); emit({ type: "state" });
+  return { status: "created" };
+}
 const fmtJ = (m: { at: string; label: string; from: string; text: string }, who: string) => `${m.at.slice(5, 16).replace("T", " ")} ${m.label} [${m.from === who ? "you" : m.from}]: ${m.text.replace(/\n/g, " ").slice(0, 600)}`;
 async function agentExtra(who: string, method: string, url: string, b: any, origin?: string): Promise<{ code: number; body: unknown } | null> {
   if (method !== "POST") return null;
+  if (url.startsWith("/hr/")) { // only the starter HR agent, and only these three operations
+    if (!agents[who]?.canHire) return { code: 403, body: { error: "only the HR agent can do this" } };
+    if (url === "/hr/hire") return hrHire(who, b);
+    if (url === "/hr/room") { const r = makeRoom(b.title, b.members, b.mode); return r.conv ? { code: 200, body: { text: `created room #${r.conv.title} with ${r.conv.members.join(", ") || "no members yet"}` } } : { code: r.code, body: { error: r.error } }; }
+    if (url === "/hr/list") return { code: 200, body: { text: Object.values(agents).map((a) => `${a.name}${a.profile?.role ? ` (${a.profile.role})` : ""}${a.profile?.team ? ` team ${a.profile.team}` : ""}`).join("\n") || "(no agents)" } };
+    return { code: 404, body: { error: "not found" } };
+  }
   if (url === "/send_message") { try { return { code: 200, body: { text: await sendMessage(who, String(b.to ?? ""), String(b.text ?? ""), origin) } }; } catch (e) { return { code: 400, body: { error: String(e.message ?? e) } }; } }
   if (url === "/browser/request") { // the agent asks the human to take over its browser, then waits for it to come back
     const a = agents[who]; if (!a || a.kind === "external" || a.kind === "tmux") return { code: 400, body: { error: "no browser" } };
@@ -762,6 +830,7 @@ async function agentExtra(who: string, method: string, url: string, b: any, orig
   }
   return null;
 }
+for (const a of Object.values(agents)) if (a.kind === "tmux") { try { installHostTools(a.name, SECRET, AGENT_PORT); } catch (e) { console.error(`host tools for ${a.name}: ${e}`); } } // keep the wrappers current
 startAgentApi({ port: AGENT_PORT, host: process.env.ORCIE_HOST ?? "127.0.0.1", secret: SECRET, agentNames: () => Object.keys(agents), dm: agentDm, extra: agentExtra });
 
 // ---- live browser (picture-in-picture panel) ----
@@ -799,11 +868,12 @@ async function checkAgent(a: Agent) {
   try { await dockerAsync("inspect", "-f", "{{.State.Running}}", a.container); } catch { add("container", false, "not running"); return { agent: a.name, ok: false, checks }; }
   add("container", true, "running");
   try { const img = await dockerAsync("inspect", "-f", "{{.Image}}", a.container), cur = await dockerAsync("image", "inspect", "-f", "{{.Id}}", IMAGE); add("image", img === cur, img === cur ? "current" : "outdated: run `orcie recreate " + a.name + "`"); } catch (e) { add("image", false, String(e).slice(0, 80)); }
-  const tools = ["claude", "node", "git", "gh", "playwright-mcp", "xdotool", "Xvfb", "x11vnc", "import", "remember", "recall", "read_room", "send_message", "promise", "share_file", "fetch_file", "browser_help", "orcie-dm"];
+  const tools = ["claude", "node", "git", "gh", "playwright-mcp", "xdotool", "Xvfb", "x11vnc", "import", "remember", "recall", "read_room", "send_message", "promise", "share_file", "fetch_file", "browser_help", "hire", "orcie-dm"];
   try { const out = await sh(`for t in ${tools.join(" ")}; do command -v $t >/dev/null || echo $t; done`); add("tools", !out, out ? `missing: ${out.split("\n").join(", ")}` : `${tools.length} present`); } catch (e) { add("tools", false, String(e).slice(0, 80)); }
   try { const out = await sh('if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then echo token; elif [ -f "$HOME/.claude/.credentials.json" ]; then echo login-copy; else echo none; fi; claude --version 2>&1 | head -1'); const [mode, ver] = out.split("\n"); add("auth", mode !== "none", `${mode} (claude ${ver})`); } catch (e) { add("auth", false, String(e).slice(0, 80)); }
   try { const st = await (await hbrowser(a, "/browser/state", "GET", undefined, 8000)).json() as any; if (st.control?.enabled === false) add("browser", true, "disabled by this agent's profile"); else add("browser", !!st.running, st.running ? `running (${st.url ?? "blank"})` : "not running"); } catch { add("browser", false, "harness unreachable"); }
-  try { const out = await sh('gh api user --jq .login 2>&1 | head -1'); add("github", /^[A-Za-z0-9-]+$/.test(out), out.slice(0, 60)); } catch { add("github", false, "no access"); }
+  if (a.canHire) add("github", true, "not given to this agent, by design");
+  else try { const out = await sh('gh api user --jq .login 2>&1 | head -1'); add("github", /^[A-Za-z0-9-]+$/.test(out), out.slice(0, 60)); } catch { add("github", false, "no access"); }
   try { const code = await sh('curl -s -o /dev/null -w "%{http_code}" --max-time 5 -X POST "$ORCIE_SERVER/dm" -H "content-type: application/json" -d "{}"'); add("orcie-api", code === "401" || code === "400", `agent API answered ${code}`); } catch { add("orcie-api", false, "cannot reach the server from the container"); }
   return { agent: a.name, ok: checks.every((c) => c.ok), checks };
 }

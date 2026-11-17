@@ -19,9 +19,9 @@ export type Ctx = {
   inbox(name: string): any[]; working(name: string, conv: string, on: boolean): void; ack(name: string, conv: string, upto: number): void; reply(name: string, conv: string, text: string, upto?: number): Msg;
 };
 
-const HOME = process.env.HOME!;
-const TOKEN_FILE = process.env.ORCIE_API_TOKEN_FILE ?? `${HOME}/.orcie/api-token`;
-const AUDIT_FILE = `${HOME}/.orcie/api-audit.log`;
+import { ORCIE_DIR } from "./env.ts";
+const TOKEN_FILE = process.env.ORCIE_API_TOKEN_FILE ?? `${ORCIE_DIR}/api-token`;
+const AUDIT_FILE = `${ORCIE_DIR}/api-audit.log`;
 const PORT = Number(process.env.ORCIE_API_PORT ?? 8787);
 const DENY = (process.env.ORCIE_API_DENY ?? "kfl-*,remica-*").split(",").map((g) => g.trim()).filter(Boolean)
   .map((g) => new RegExp("^" + g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"));
@@ -29,7 +29,7 @@ const denied = (name: string) => DENY.some((r) => r.test(name));
 
 function loadToken(): string {
   if (existsSync(TOKEN_FILE)) return readFileSync(TOKEN_FILE, "utf8").trim();
-  mkdirSync(`${HOME}/.orcie`, { recursive: true, mode: 0o700 });
+  mkdirSync(ORCIE_DIR, { recursive: true, mode: 0o700 });
   const t = randomBytes(32).toString("hex");
   writeFileSync(TOKEN_FILE, t + "\n", { mode: 0o600 }); chmodSync(TOKEN_FILE, 0o600);
   console.log(`private API: generated a new token at ${TOKEN_FILE}`);

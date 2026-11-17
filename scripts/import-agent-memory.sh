@@ -3,11 +3,12 @@
 # memory block and `recall` can see them. Read-only on the container; idempotent (skips agents already imported).
 # Usage: scripts/import-agent-memory.sh <agent>... | --all
 set -u
-DIR="${ORCIE_MEMORY_DIR:-$HOME/.orcie/memory}"
+PX="${ORCIE_PREFIX:-orcie}"
+DIR="${ORCIE_MEMORY_DIR:-${ORCIE_DIR:-$HOME/.orcie}/memory}"
 names=("$@")
-if [ "${names[0]:-}" = "--all" ] || [ ${#names[@]} -eq 0 ]; then names=($(docker ps --format '{{.Names}}' | sed -n 's/^orcie-//p')); fi
+if [ "${names[0]:-}" = "--all" ] || [ ${#names[@]} -eq 0 ]; then names=($(docker ps --format '{{.Names}}' | sed -n "s/^${PX}-//p")); fi
 for a in "${names[@]}"; do
-  c="orcie-$a"; docker inspect "$c" >/dev/null 2>&1 || { echo "$a: no container, skipped"; continue; }
+  c="$PX-$a"; docker inspect "$c" >/dev/null 2>&1 || { echo "$a: no container, skipped"; continue; }
   files=$(docker exec "$c" sh -c 'cd /data/memory 2>/dev/null && ls -1 *.md 2>/dev/null' || true)
   [ -n "$files" ] || { echo "$a: no notes to import"; continue; }
   mkdir -p "$DIR/$a" && chmod 700 "$DIR" "$DIR/$a"

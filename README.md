@@ -10,7 +10,31 @@ Status: early scaffold. See [docs/DESIGN.md](docs/DESIGN.md).
 
 Dev: `node --experimental-strip-types server/src/index.ts`
 
-## POC quickstart
+## Install in one command (macOS)
+```
+curl -fsSL https://raw.githubusercontent.com/steventyyeh/orcie/main/scripts/install.sh | bash
+```
+It prints its plan, puts orcie in `~/orcie` (override with `ORCIE_HOME`), then runs `orcie setup`: checks git, tmux, node 22.13+, colima/docker and the `claude` CLI (asks before any Homebrew install), starts colima, helps you save a Claude subscription token (`claude setup-token`, stored in `~/.orcie/token`, mode 600; no API key is ever used), optionally shares your `gh` login, builds the agent image, starts the server in a tmux session (`orcie-server`) and creates a starter agent **hr**. Then open http://localhost:8080/dm/hr and tell HR what team you want. No sudo, nothing is deleted, and `orcie setup` is safe to re-run.
+
+| Command | What it does |
+|---|---|
+| `orcie status` | colima, server and every agent's health (exit 1 if something is down) |
+| `orcie up` / `orcie down` | start / stop colima's containers and the server (down keeps colima and all data) |
+| `orcie restart [--force]` | whole stack: wait for idle agents, stop, start (also after a reboot). `orcie restart <agent>` / `--all` restarts agent processes only |
+| `orcie logs [-f]` / `orcie logs <agent>` | server log / one agent's container log |
+| `orcie autostart on\|off` | start the stack at login (launchd) |
+| `orcie setup --hr` | bring the HR agent back after you laid it off on purpose |
+
+The HR agent can create agents and rooms (the `hire` tool) and nothing else: it cannot lay off or change agents, and its container gets no GitHub credential. Settings live in `~/.orcie/env` (ports, database). A second, isolated stack (trial or tests) uses its own `ORCIE_DIR`, `ORCIE_PREFIX`, `PORT`, `ORCIE_AGENT_PORT`, `ORCIE_API_PORT`; its containers are named `<prefix>-<agent>`.
+
+### Troubleshooting
+- **"colima not running" / docker does not answer** (after a reboot): `orcie up` starts colima and everything else. If colima itself fails: `colima status`, then `colima stop && colima start`.
+- **Port in use**: setup names the owner. Change `PORT`, `ORCIE_AGENT_PORT` or `ORCIE_API_PORT` in `~/.orcie/env`, then `orcie up`.
+- **"OAuth session expired" / agents cannot answer**: save a fresh token (`claude setup-token`, then `scripts/setup-token.sh`) and run `orcie recreate-all`.
+- **Server will not start**: `orcie logs`. Make sure `orcie status` shows docker answering.
+- **Agents out of memory/disk**: the Docker VM needs about 8 GiB: `colima stop && colima start --memory 8 --disk 60`.
+
+## POC quickstart (manual steps)
 1. `colima start` (Docker), then `docker build -t orcie-agent:dev harness`
 2. Subscription login: `scripts/export-login.sh` copies your existing Claude login from the Keychain to `~/.orcie/creds`
 3. `node --experimental-strip-types server/src/index.ts`

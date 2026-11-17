@@ -1,6 +1,15 @@
 #!/bin/bash
 # orcie CLI (POC). Usage: orcie create|ls|send|dm|log|shell|rm ...
-S="${ORCIE_SERVER:-http://127.0.0.1:8080}"
+# --- configuration: where this stack keeps its state, and which ports/containers are its own (a second, isolated stack sets ORCIE_DIR/ORCIE_PREFIX)
+SELF="${BASH_SOURCE[0]}"; while [ -L "$SELF" ]; do d="$(cd "$(dirname "$SELF")" && pwd)"; SELF="$(readlink "$SELF")"; case "$SELF" in /*) ;; *) SELF="$d/$SELF" ;; esac; done
+REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
+ORCIE_DIR="${ORCIE_DIR:-$HOME/.orcie}"; export ORCIE_DIR
+if [ -f "$ORCIE_DIR/env" ]; then # KEY=value lines written by `orcie setup`; the environment wins; nothing is executed
+  while IFS='=' read -r k v; do case "$k" in ORCIE_PREFIX|PORT|ORCIE_AGENT_PORT|ORCIE_API_PORT|ORCIE_API_HOST|ORCIE_DB|ORCIE_HOST) [ -z "${!k:-}" ] && [[ "$v" =~ ^[A-Za-z0-9_./:@+~-]*$ ]] && export "$k=$v" ;; esac; done < "$ORCIE_DIR/env"
+fi
+PREFIX="${ORCIE_PREFIX:-orcie}"; PORT="${PORT:-8080}"; AGENT_PORT="${ORCIE_AGENT_PORT:-8081}"; export ORCIE_PREFIX="$PREFIX"
+if [ -n "${ORCIE_DB:-}" ]; then DB="$ORCIE_DB"; elif [ -f "$REPO/orcie.db" ]; then DB="$REPO/orcie.db"; else DB="$ORCIE_DIR/orcie.db"; fi # an existing database in the repo keeps being used
+S="${ORCIE_SERVER:-http://127.0.0.1:$PORT}"
 j() { curl -s -H 'content-type: application/json' "$@"; echo; }
 enc() { node -e 'console.log(JSON.stringify(Object.fromEntries(process.argv.slice(1).map(a=>a.split(/=(.*)/s).slice(0,2)))))' "$@"; }
 case "$1" in
@@ -8,10 +17,10 @@ case "$1" in
   ls) j "$S/agents" ;;
   send) j -X POST "$S/dm" -d "$(enc from=user to="$2" text="$3")" ;;
   dm) # operator acting as agent <from>: signs with the server secret (the agent listener derives the sender from the token)
-    T=$(node -e 'const c=require("crypto");const s=require("fs").readFileSync(process.env.HOME+"/.orcie/server-secret","utf8").trim();console.log(c.createHmac("sha256",s).update("orcie-agent:"+process.argv[1]).digest("hex"))' "$2")
-    curl -s -H 'content-type: application/json' -H "Authorization: Bearer $T" -X POST "${ORCIE_AGENT_SERVER:-http://127.0.0.1:8081}/dm" -d "$(enc to="$3" text="$4")"; echo ;;
+    T=$(node -e 'const c=require("crypto");const s=require("fs").readFileSync(process.env.ORCIE_DIR+"/server-secret","utf8").trim();console.log(c.createHmac("sha256",s).update("orcie-agent:"+process.argv[1]).digest("hex"))' "$2")
+    curl -s -H 'content-type: application/json' -H "Authorization: Bearer $T" -X POST "${ORCIE_AGENT_SERVER:-http://127.0.0.1:$AGENT_PORT}/dm" -d "$(enc to="$3" text="$4")"; echo ;;
   log) curl -s "$S/agents/$2/log" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).log.forEach(t=>console.log(`\n[${t.at}] ${t.from}: ${t.text}\n  -> ${t.reply}`)))' ;;
-  shell) docker exec -it "orcie-$2" bash ;;
+  shell) docker exec -it "$PREFIX-$2" bash ;;
   search) curl -s "$S/api/search?q=$(node -e 'console.log(encodeURIComponent(process.argv[1]))' "$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).results.forEach(r=>console.log(`${r.title} #${r.seq} ${r.from}: ${r.snippet.replace(/\[\[|\]\]/g,"*").replace(/\n/g," ")}`)))' ;;
   doctor) curl -s "$S/api/git?verify=1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log("git token file:",j.tokenFile?"present":"MISSING");let bad=0;j.agents.forEach(a=>{const ok=a.ok;if(!ok)bad++;console.log(`  ${a.name.padEnd(10)} mounted=${a.mounted} github=${a.githubUser||"NO ACCESS"}${ok?"":"   <- run: orcie recreate "+a.name}`)});(j.external||[]).forEach(n=>console.log(`  ${n.padEnd(10)} external agent (no container, not given the token)`));process.exit(bad?1:0)})' ;;
   link-tmux) j -X POST "$S/agents/tmux" -d "$(enc name="$2" session="$3")" ;;
@@ -44,17 +53,20 @@ case "$1" in
   stats) curl -s "$S/api/stats" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s),g=b=>(b/2**30).toFixed(1)+"G";console.log("agent".padEnd(14)+"kind".padEnd(10)+"busy".padEnd(6)+"convs".padEnd(7)+"sent".padEnd(7)+"promises".padEnd(10)+"cpu".padEnd(14)+"memory".padEnd(26)+"disk");
       for(const a of j.agents){const l=a.limits,cpu=a.cpu?`${a.cpu}/${l?l.cpus:"-"}`:"-";const dsk=l?(l.diskGb==null?(a.diskUsedBytes!=null?g(a.diskUsedBytes)+" (no limit)":"no limit"):(a.diskUsedBytes!=null?`${g(a.diskUsedBytes)} / ${l.diskGb}G (${Math.round(a.diskUsedBytes/a.diskSizeBytes*100)}%)`:`- / ${l.diskGb}G`)):"-";
         console.log(a.name.padEnd(14)+a.kind.padEnd(10)+String(a.busy).padEnd(6)+String(a.conversations).padEnd(7)+String(a.messagesSent).padEnd(7)+String(a.activePromises).padEnd(10)+cpu.padEnd(14)+String(a.memory??"-").padEnd(26)+dsk)}})' ;;
-  logs) docker logs --tail "${3:-100}" "orcie-$2" ;;
+  logs) # orcie logs [-f|n]  = the server's log;  orcie logs <agent> [n]  = that agent's container
+    . "$REPO/cli/stack.sh"; if [ -z "${2:-}" ] || [ "$2" = -f ] || [[ "$2" =~ ^[0-9]+$ ]]; then cmd_logs_server "${2:-}"; else docker logs --tail "${3:-100}" "$PREFIX-$2"; fi ;;
+  setup|up|down|status|autostart) . "$REPO/cli/stack.sh"; "cmd_$1" "${@:2}" ;;
   attach) # chat with an agent from the terminal (Ctrl-D to leave)
     [ -n "$2" ] || { echo "usage: orcie attach <agent>"; exit 1; }; echo "chatting with $2 (Ctrl-D to leave)"
     while printf '%s> ' "you"; IFS= read -r line; do [ -z "$line" ] && continue; echo "...thinking"; curl -s -X POST "$S/dm" -H 'content-type: application/json' -d "$(enc to="$2" text="$line")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log("\n"+"'"$2"'"+"> "+(j.reply??j.error??"(no reply)")+"\n")})'; done; echo ;;
   promises) curl -s "$S/api/promises${2:+?agent=$2}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).promises.forEach(p=>console.log(`#${p.id} ${p.agent} [${p.status}] ${p.text}`)))' ;;
   restart) # restart agent processes; waits until the agent is idle unless --force
     force=0; names=(); for a in "${@:2}"; do [ "$a" = "--force" ] && force=1 || names+=("$a"); done
+    if [ ${#names[@]} -eq 0 ]; then . "$REPO/cli/stack.sh"; cmd_restart_stack $force; exit $?; fi # no agent named: restart the whole stack (server, agents, browsers)
     if [ "${names[0]}" = "--all" ] || [ ${#names[@]} -eq 0 ]; then names=($(curl -s "$S/agents" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).filter(a=>!a.kind||a.kind==="claude").forEach(a=>console.log(a.name)))')); fi
     for a in "${names[@]}"; do
       if [ $force -eq 0 ]; then n=0; while curl -s "$S/api/activity" | grep -q "\"agent\":\"$a\""; do [ $n -eq 0 ] && echo "$a is busy, waiting (use --force to restart now)..."; n=$((n+1)); [ $n -gt 360 ] && { echo "$a still busy after 30 min, skipping"; continue 2; }; sleep 5; done; fi
       echo -n "$a: "; j -X POST "$S/api/agents/$a/restart" -d '{}'
     done ;;
-  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | log <agent> | shell <agent> | search <text> | doctor | add-external <name> | link-tmux <name> <session> | tmux-sessions | recreate <agent> | recreate-all | layoff <agent> [--confirm <agent>] [--no-archive] | drop-backup <agent> | set <agent> [--cpu N] [--memory 4g] [--disk 20g] [--model id] [--restart-ok] | check [agent] | stats | logs <agent> [n] | attach <agent> | restart [agent... | --all] [--force] | promises [agent]"; exit 1 ;;
+  *) echo "usage: orcie create <name> [model] | ls | send <agent> <text> | dm <from> <to> <text> | log <agent> | shell <agent> | search <text> | doctor | add-external <name> | link-tmux <name> <session> | tmux-sessions | recreate <agent> | recreate-all | layoff <agent> [--confirm <agent>] [--no-archive] | drop-backup <agent> | set <agent> [--cpu N] [--memory 4g] [--disk 20g] [--model id] [--restart-ok] | check [agent] | stats | logs <agent> [n] | attach <agent> | setup [--yes] [--hr] | up | down | status | autostart on|off | restart [--force] (whole stack) | restart <agent...>|--all [--force] (agents only) | logs [-f] (server) | promises [agent]"; exit 1 ;;
 esac

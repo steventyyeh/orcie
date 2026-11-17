@@ -2,7 +2,7 @@
 # Shared client for the orcie agent API (authenticated with this agent's own token; the server decides who is calling).
 # Used through the names remember / recall / read_room (symlinks to this file).
 call() { curl -s --max-time 1000 -X POST "${ORCIE_SERVER:-http://host.docker.internal:8081}$1" -H 'content-type: application/json' -H "Authorization: Bearer ${ORCIE_AGENT_TOKEN}" -H "X-Orcie-Conversation: ${ORCIE_CONVERSATION}" -d "$2"; }
-case "$(basename "$0")" in
+case "${ORCIE_TOOL:-$(basename "$0")}" in
   remember) [ $# -ge 1 ] || { echo 'usage: remember "<note>"' >&2; exit 1; }
     call /memory/remember "$(node -e 'console.log(JSON.stringify({text:process.argv[1]}))' "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:"saved")})' ;;
   recall) [ $# -ge 1 ] || { echo 'usage: recall "<what to look for>"' >&2; exit 1; }
@@ -23,9 +23,23 @@ case "$(basename "$0")" in
     f="$1"; shift; body="$(node -e 'const fs=require("fs"),p=require("path");const f=process.argv[1];console.log(JSON.stringify({name:p.basename(f),data:fs.readFileSync(f).toString("base64"),caption:process.argv[2]||""}))' "$f" "$*")"
     printf '%s' "$body" | curl -s --max-time 300 -X POST "${ORCIE_SERVER:-http://host.docker.internal:8081}/files/upload" -H 'content-type: application/json' -H "Authorization: Bearer ${ORCIE_AGENT_TOKEN}" -H "X-Orcie-Conversation: ${ORCIE_CONVERSATION}" --data-binary @- | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
   fetch_file) [ $# -ge 1 ] || { echo 'usage: fetch_file <id> [save-as-path]' >&2; exit 1; }
-    call /files/get "$(node -e 'console.log(JSON.stringify({id:process.argv[1]}))' "$1")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(j.error){console.log("error: "+j.error);process.exit(1)}const fs=require("fs"),p=require("path");const dest=process.argv[1]||p.join("/data/workspace/files",j.name);fs.mkdirSync(p.dirname(dest),{recursive:true});fs.writeFileSync(dest,Buffer.from(j.dataBase64,"base64"));console.log("saved to "+dest)})' "$2" ;;
+    call /files/get "$(node -e 'console.log(JSON.stringify({id:process.argv[1]}))' "$1")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(j.error){console.log("error: "+j.error);process.exit(1)}const fs=require("fs"),p=require("path");const dest=process.argv[1]||p.join(process.env.ORCIE_FILES_DEST||"/data/workspace/files",j.name);fs.mkdirSync(p.dirname(dest),{recursive:true});fs.writeFileSync(dest,Buffer.from(j.dataBase64,"base64"));console.log("saved to "+dest)})' "$2" ;;
   send_message) [ $# -ge 2 ] || { echo 'usage: send_message "<user | #room | agent>" "<text>"' >&2; exit 1; }
     t="$1"; shift
     call /send_message "$(node -e 'console.log(JSON.stringify({to:process.argv[1],text:process.argv[2]}))' "$t" "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
+  hire) # the starter HR agent only (the server refuses everyone else): hire list | hire new <name> [--model m] < profile.json | hire room "<title>" [--sequential] <member>...
+    out() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{console.log("error: bad reply from the server");process.exit(1)}console.log(j.error?"error: "+j.error:j.text)})'; }
+    sub="${1:-}"; [ $# -ge 1 ] && shift
+    case "$sub" in
+      list) call /hr/list '{}' | out ;;
+      new) [ $# -ge 1 ] || { echo 'usage: hire new <name> [--model <model>] < profile.json' >&2; exit 1; }; nm="$1"; shift; model=""
+        while [ $# -gt 0 ]; do case "$1" in --model) model="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac; done
+        body="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let p;try{p=JSON.parse(s)}catch(e){console.error("error: the profile on stdin is not valid JSON");process.exit(1)}const o={name:process.argv[1],profile:p};if(process.argv[2])o.model=process.argv[2];console.log(JSON.stringify(o))})' "$nm" "$model")" || exit 1
+        call /hr/hire "$body" | out ;;
+      room) [ $# -ge 1 ] || { echo 'usage: hire room "<title>" [--sequential] <member>...' >&2; exit 1; }; title="$1"; shift; mode=parallel; members=()
+        for a in "$@"; do [ "$a" = "--sequential" ] && mode=sequential || members+=("$a"); done
+        call /hr/room "$(node -e 'console.log(JSON.stringify({title:process.argv[1],mode:process.argv[2],members:process.argv.slice(3)}))' "$title" "$mode" "${members[@]}")" | out ;;
+      *) echo 'usage: hire list | hire new <name> [--model <model>] < profile.json | hire room "<title>" [--sequential] <member>...' >&2; exit 1 ;;
+    esac ;;
   *) echo "unknown tool" >&2; exit 1 ;;
 esac

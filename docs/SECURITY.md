@@ -45,7 +45,13 @@ Bearer token (constant-time compare, failed-auth rate limit), audit log, deny li
 
 ## Tmux bridge
 
-Linked sessions run as the operator on the Mac, outside any container, with no sandbox. Only sessions named in `link-tmux` are touched; `ORCIE_TMUX_DENY` (default `orcie-commander,secretary,commander`) can never be linked.
+Linked sessions run as the operator on the Mac, outside any container, with no sandbox and full permissions. Only sessions named in `link-tmux` are touched. `secretary` and `commander` can **never** be linked (hard-coded); `ORCIE_TMUX_DENY` adds further names.
+
+**Risk to understand.** A linked session turns the web UI into a path to the user's Mac: whoever can send a message in the UI (or an agent that can DM the linked agent) can make that session run commands as the user. The protections are the request guard (UI bound to `127.0.0.1`, Host and Origin checks, JSON-only writes, loopback-only WebSocket) and that the UI is not exposed on any other interface by default. Never set `ORCIE_HOST` to a non-loopback address while a host session is linked, and do not publish port 8080 (tunnels, port forwards). A message from another agent is typed into the session like a user message, so a prompt-injected agent could try to steer it; the loop guard and addressing rules apply, but they are not a sandbox.
+
+**Documented exception (2026-11-16).** `orcie-commander` was on the default deny list. The user explicitly opted in to linking that one session (the operator's own orcie-commander Claude Code session) as the agent `orcie-commander`, so it was removed from the default list. It is an opt-in for this session only; add it back with `ORCIE_TMUX_DENY=orcie-commander` to forbid it again.
+
+**Tools for a linked agent.** `~/.orcie/hosttools/<agent>/bin/` holds `remember`, `recall`, `read_room`, `send_message`, `promise`, `share_file`, `fetch_file` and `orcie-dm`. They use the agent API on loopback with the agent's own token, `HMAC(server secret, agent name)`, kept in `~/.orcie/hosttools/<agent>/token` (mode 600). The server derives the sender from that token, as for container agents, so the agent cannot speak as anyone else, and the server secret itself is never written there. Known limit: messages typed into the session by other channels (for example another Claude session sending to it with tmux) are indistinguishable from bridge messages in the transcript, so a reply made while both are pending can be posted to the UI.
 
 ## Files and browser
 

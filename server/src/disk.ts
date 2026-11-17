@@ -3,14 +3,15 @@
 // the image size fail with ENOSPC, so the limit is enforced by the filesystem itself, not by polling.
 import { execFileSync } from "node:child_process";
 import { validName } from "./profile.ts";
+import { PREFIX } from "./env.ts";
 
-const DIR = process.env.ORCIE_DISK_DIR ?? "/var/lib/docker/orcie-disks"; // inside the VM (the 40 GB data disk on colima)
+const DIR = process.env.ORCIE_DISK_DIR ?? `/var/lib/docker/${PREFIX}-disks`; // inside the VM (the 40 GB data disk on colima)
 // How to run a root shell where the Docker daemon runs. colima VM by default; set ORCIE_VM_EXEC="sudo -n" on a native Linux host.
 const VM = (process.env.ORCIE_VM_EXEC ?? "colima ssh -- sudo -n").split(/\s+/);
 const vm = (script: string, timeout = 600_000) => execFileSync(VM[0], [...VM.slice(1), "sh", "-ec", script], { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] }).trim();
 const safe = (n: string) => { if (!validName(n)) throw new Error("bad agent name"); return n; };
 const img = (n: string) => `${DIR}/${safe(n)}.img`, mnt = (n: string) => `${DIR}/mnt/${safe(n)}`;
-export const volumeName = (n: string) => `orcie-${n}-disk`;
+export const volumeName = (n: string) => `${PREFIX}-${n}-disk`;
 
 const docker = (...a: string[]) => execFileSync("docker", a, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -27,7 +28,7 @@ export const vmFreeGb = () => Number(vm(`mkdir -p ${DIR}; df -B1 --output=avail 
 /** Creates the image, formats and mounts it, and registers it with Docker as a volume. Does not touch any other volume. */
 export function create(name: string, gb: number) {
   if (volumeExists(name)) throw new Error(`volume ${volumeName(name)} already exists`);
-  vm(`mkdir -p ${DIR}/mnt; test ! -e ${img(name)}; truncate -s ${Math.ceil(gb * 1024)}M ${img(name)}; mkfs.ext4 -q -m 0 -F -L orcie-${name} ${img(name)}; ${ensureFstab(name)}; ${mountCmd(name)}; chown 1000:1000 ${mnt(name)}`);
+  vm(`mkdir -p ${DIR}/mnt; test ! -e ${img(name)}; truncate -s ${Math.ceil(gb * 1024)}M ${img(name)}; mkfs.ext4 -q -m 0 -F -L ${PREFIX}-${name} ${img(name)}; ${ensureFstab(name)}; ${mountCmd(name)}; chown 1000:1000 ${mnt(name)}`);
   docker("volume", "create", "--driver", "local", "--opt", "type=none", "--opt", "o=bind", "--opt", `device=${mnt(name)}`, volumeName(name));
 }
 export const volumeExists = (n: string) => { try { docker("volume", "inspect", volumeName(n)); return true; } catch { return false; } };
