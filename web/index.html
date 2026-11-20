@@ -83,6 +83,7 @@ dialog.wide{width:min(640px,94vw)}
 details.browser-ended{margin:var(--s2) 0;border:1px solid var(--line);border-radius:var(--r2);padding:var(--s1) var(--s3);font-size:13px;color:var(--mute);width:min(100%,780px)}
 details.browser-ended summary{cursor:pointer;padding:var(--s1) 0}
 details.browser-ended .bvfrozen img{display:block;max-width:100%;border-radius:var(--r2);margin:var(--s2) 0;border:1px solid var(--line)}
+.bico{display:inline-flex;align-items:center;flex:none;margin-left:var(--s2);padding:2px 3px;border-radius:var(--r1);cursor:pointer;color:#2e9e5b;background:rgba(46,158,91,.14);animation:bpulse 1.6s infinite}.bico:hover{background:rgba(46,158,91,.3)}.item.on .bico{color:#fff;background:rgba(255,255,255,.22)}
 .bdot{width:8px;height:8px;border-radius:50%;background:#2e9e5b;flex:none;margin-left:var(--s2);animation:bpulse 1.6s infinite}
 @keyframes bpulse{0%{box-shadow:0 0 0 0 rgba(46,158,91,.6)}70%{box-shadow:0 0 0 6px rgba(46,158,91,0)}100%{box-shadow:0 0 0 0 rgba(46,158,91,0)}}
 .bchip{border-color:#2e9e5b!important}
@@ -163,7 +164,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 .stack{display:flex;align-items:center;padding:3px 10px 3px 6px;border:1px solid var(--line-strong);border-radius:var(--r2);gap:var(--s2);font-size:13px;color:var(--mute);height:30px}
 .stack .avs{display:flex}.stack .av+.av{margin-left:-8px}
 .pop{position:absolute;background:var(--bg);border:1px solid var(--line);border-radius:var(--r3);box-shadow:0 8px 28px rgba(0,0,0,.18);z-index:20;min-width:200px;padding:var(--s1);max-height:260px;overflow:auto}
-.pop .row{display:flex;gap:var(--s2);align-items:center;height:34px;padding:0 var(--s3);border-radius:var(--r1);cursor:pointer;color:var(--fg);font-size:14px}
+.pop .row{white-space:nowrap;display:flex;gap:var(--s2);align-items:center;height:34px;padding:0 var(--s3);border-radius:var(--r1);cursor:pointer;color:var(--fg);font-size:14px}
 .pop .row:hover,.pop .row.sel{background:var(--link);color:#fff}
 .relpop{position:relative}
 
@@ -474,8 +475,8 @@ function section(id, title, addTitle, onAdd, items) {
   const list = el.querySelector(".list"), browsing = browsingConvs();
   items.forEach((i) => {
     const d = document.createElement("div"); d.className = "item" + (i.id === cur ? " on" : "") + (i.badge ? " unread" : "") + (i.busy ? " busy" : "");
-    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span>` + (i.tag ? `<span class="tag" title="${i.tag === "mac" ? "Existing tmux session on the Mac, no container" : "External agent: bridged through the private API, no container"}">${i.tag}</span>` : "") + (i.busy ? '<span class="livedot" title="Working"></span>' : "") + (browsing[i.id] ? `<span class="bdot" title="${esc(browsing[i.id].join(", "))} browsing: open to watch"></span>` : "") + (drafts[i.id] && i.id !== cur ? `<span class="draftmark" title="Unsent draft">${ic("pencil")}</span>` : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
-    d.onclick = () => open(i.id); list.append(d);
+    d.innerHTML = i.icon + `<span class="nm">${esc(i.text)}</span>` + (i.tag ? `<span class="tag" title="${i.tag === "mac" ? "Existing tmux session on the Mac, no container" : "External agent: bridged through the private API, no container"}">${i.tag}</span>` : "") + (i.busy ? '<span class="livedot" title="Working"></span>' : "") + (browsing[i.id] ? `<span class="bdot" title="${esc(browsing[i.id].join(", "))} browsing: open to watch"></span>` : "") + (i.id.startsWith("dm:") && !i.id.includes("+") && bsess[i.id.slice(3)]?.active ? `<span class="bico" data-ag="${esc(i.id.slice(3))}" title="${esc(i.id.slice(3))} is browsing: click to watch" role="button"><svg viewBox="0 0 20 16" width="20" height="16" aria-hidden="true"><rect x="1" y="1" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M1 5.2h18" stroke="currentColor" stroke-width="1.6"/><circle cx="4" cy="3.1" r=".9" fill="currentColor"/><circle cx="6.8" cy="3.1" r=".9" fill="currentColor"/></svg></span>` : "") + (drafts[i.id] && i.id !== cur ? `<span class="draftmark" title="Unsent draft">${ic("pencil")}</span>` : "") + (i.badge ? `<span class="badge ${i.soft ? "soft" : ""}">${i.badge > 99 ? "99+" : i.badge}</span>` : "");
+    d.onclick = (ev) => { const j = ev.target.closest?.(".bico"); if (j) { ev.stopPropagation(); open(targetConv(j.dataset.ag)); } else open(i.id); }; list.append(d);
   });
   if (!items.length) { const e = document.createElement("div"); e.className = "item none"; e.textContent = "Nothing here yet"; list.append(e); }
   return el;
@@ -528,11 +529,10 @@ function drawHeader() {
   }
   if (!room && !ro && agent) { // Manage: HR profile, promises, lay off
     const w = document.createElement("div"); w.className = "relpop"; w.innerHTML = `<button class="btn sm">Manage</button>`;
-    w.firstChild.onclick = (e) => { e.stopPropagation(); if (w.querySelector(".pop")) return closePops(); closePops(); const p = document.createElement("div"); p.className = "pop"; p.dataset.pop = "1"; p.style.cssText = "top:36px;right:0;min-width:160px";
+    w.firstChild.onclick = (e) => { e.stopPropagation(); if (w.querySelector(".pop")) return closePops(); closePops(); const p = document.createElement("div"); p.className = "pop"; p.dataset.pop = "1"; p.style.cssText = "top:36px;right:0;min-width:210px";
       [["Edit profile", () => editProfile(agent)], ["Resources and model", () => showResources(agent.name)], ["Apps", () => showApps(agent.name)], ["Reminders", () => showReminders(agent.name)], ["Promises", () => showPromises(agent.name)], ...(agent.canHire ? [] : [["Lay off…", () => removeAgent(agent.name), "danger"]])].forEach(([t, fn, cls]) => { const x = document.createElement("div"); x.className = "row"; if (cls) x.style.color = "var(--badge)"; x.textContent = t; x.onclick = () => { closePops(); fn(); }; p.append(x); }); w.append(p); };
     h.append(w);
   }
-  Object.entries(browsingConvs()).forEach(([cid, ags]) => { if (cid !== cur) ags.forEach((a) => { const b = document.createElement("button"); b.className = "btn sm bchip"; b.textContent = `${a} is browsing`; b.title = "Open the conversation where the live browser is"; b.onclick = () => open(cid); h.append(b); }); }); // visible from any conversation
   if (!room) return;
   const st = document.createElement("div"); st.className = "stack"; st.title = conv.members.join(", ");
   st.innerHTML = `<span class="avs">${conv.members.slice(0, 4).map((m) => av(m, "xs")).join("")}</span><span>${conv.members.length} member${conv.members.length === 1 ? "" : "s"}</span>`; h.append(st);
@@ -650,7 +650,7 @@ async function showApps(name) {
       d.innerHTML = `<div class="t"><b>${esc(a.label)}</b><div class="st" style="text-transform:none;font-weight:400">${esc(a.blurb)}</div>${a.experimental ? `<div class="st" style="text-transform:none;font-weight:400;color:var(--badge)">${esc(a.experimental)}</div>` : ""}${job && job.state === "failed" ? `<div class="st" style="text-transform:none;color:var(--badge)">${esc(job.message)}</div>` : ""}</div><span class="st">${status}</span>`;
       const mk = (label, act, cls = "") => { const b = document.createElement("button"); b.type = "button"; b.className = `btn sm ${cls}`; b.textContent = label; b.disabled = working || !r.browser; b.onclick = async () => { try { await api(`/agents/${encodeURIComponent(name)}/apps/${a.id}`, "POST", { action: act }); } catch (err) { toast(err.message); } draw(); }; d.append(b); };
       if (!a.installed) mk(a.id === "wechat" ? "Install (about 200 MB)" : "Install", "install", "p");
-      else { a.actions.filter((x) => x !== "install").forEach((x) => mk(x === "open" ? "Open" : x[0].toUpperCase() + x.slice(1), x)); }
+      else { a.actions.filter((x) => x !== "install").forEach((x) => mk({ open: "Open", on: "Turn on", off: "Turn off" }[x] || x[0].toUpperCase() + x.slice(1), x)); }
       if (a.installed) { const b = document.createElement("button"); b.type = "button"; b.className = "btn sm"; b.textContent = "Show screen"; b.onclick = () => { appDlg.close(); openBrowser(name); }; d.append(b); }
       box.append(d); });
     return busy; };

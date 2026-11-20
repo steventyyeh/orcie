@@ -66,6 +66,7 @@ export async function startBrowser() {
   supervise("xvfb", "Xvfb", [DISPLAY, "-screen", "0", "1280x800x24", "-ac", "-noreset"]);
   for (let i = 0; i < 50 && !existsSync("/tmp/.X11-unix/X99"); i++) await sleep(100);
   supervise("x11vnc", "x11vnc", ["-display", DISPLAY, "-forever", "-shared", "-nopw", "-rfbport", "5900", "-localhost", "-quiet"]);
+  spawn("/usr/local/bin/desktop-app", ["launch"], { stdio: "ignore", detached: true }).on("error", () => {}).unref(); // the optional desktop (window manager and taskbar), if the user turned it on
   supervise("chromium", "/usr/local/bin/orcie-chromium", chromiumArgs);
   startProxy();
 }

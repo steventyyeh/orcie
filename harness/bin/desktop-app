@@ -1,0 +1,36 @@
+#!/bin/bash
+# An Ubuntu-style desktop on the agent's live display (:99): a window manager (title bars, move/resize/maximize), a taskbar with a window list and clock,
+# and a right-click menu. Without it the display is just whatever windows exist, stacked with no way to switch between them.
+#   desktop-app on | off | status | launch
+# "on" also writes /data/desktop-on, so the desktop comes back whenever the agent's browser service restarts. "launch" only starts it (used at start-up).
+export DISPLAY=:99; FLAG=/data/desktop-on; CFG=/data/home/.config/openbox
+running() { pgrep -x openbox >/dev/null; }
+launch() {
+  [ -e /tmp/.X11-unix/X99 ] || { echo "the live display is not running (the browser tool must be on for this agent)" >&2; return 1; }
+  running && return 0
+  mkdir -p "$CFG"
+  cat > "$CFG/menu.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+<menu id="root-menu" label="Desktop">
+  <item label="Terminal"><action name="Execute"><command>xterm -fa Monospace -fs 11</command></action></item>
+  <item label="WeChat (start)"><action name="Execute"><command>wechat-app start</command></action></item>
+  <item label="WeChat (stop)"><action name="Execute"><command>wechat-app stop</command></action></item>
+  <separator/>
+  <item label="Reconfigure"><action name="Reconfigure"/></item>
+</menu>
+</openbox_menu>
+XML
+  xsetroot -solid '#2b3a4a' 2>/dev/null
+  nohup openbox >/tmp/openbox.log 2>&1 &
+  sleep 1
+  pgrep -x tint2 >/dev/null || nohup tint2 >/tmp/tint2.log 2>&1 &
+  return 0
+}
+case "$1" in
+  on) touch "$FLAG"; launch && echo "desktop is on (title bars, taskbar, right-click menu)" ;;
+  launch) [ -e "$FLAG" ] && launch ;;
+  off) rm -f "$FLAG"; pkill -x tint2; pkill -x openbox; echo "desktop is off" ;;
+  status) running && echo running || echo "not running" ;;
+  *) echo "usage: desktop-app on | off | status" >&2; exit 1 ;;
+esac
