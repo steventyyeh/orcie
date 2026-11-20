@@ -107,6 +107,9 @@ ensure_dirs() {
   for f in server-secret api-token; do
     [ -s "$ORCIE_DIR/$f" ] || { ( umask 077; openssl rand -hex 32 > "$ORCIE_DIR/$f" ); chmod 600 "$ORCIE_DIR/$f"; good "generated $f"; }
   done
+  if [ ! -f "$DB" ] && [ -n "$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep "^${PREFIX}-")" ]; then # agents exist but this would start an empty database: never silently hide them
+    die "Found existing ${PREFIX}-* agent containers but no database at $DB. Refusing to create an empty one. Point ORCIE_DB at your existing orcie.db (for example ORCIE_DB=/path/to/orcie.db orcie setup), or use another ORCIE_PREFIX for a separate stack."
+  fi
   if [ ! -f "$ORCIE_DIR/env" ]; then # remembered settings for every later command (a local, isolated stack sets its own)
     ( umask 077; { echo "# written by orcie setup; edit to change ports. KEY=value only."; echo "ORCIE_PREFIX=$PREFIX"; echo "PORT=$PORT"; echo "ORCIE_AGENT_PORT=$AGENT_PORT"; echo "ORCIE_API_PORT=${ORCIE_API_PORT:-8787}"; echo "ORCIE_API_HOST=${ORCIE_API_HOST:-127.0.0.1}"; echo "ORCIE_DB=$DB"; } > "$ORCIE_DIR/env" )
     good "wrote $ORCIE_DIR/env (ports and database path)"
@@ -175,10 +178,11 @@ cmd_status() {
   return $rc
 }
 cmd_restart_stack() {
-  local force=${1:-0}
+  local force=${1:-0} server_only=${2:-0}
   if [ "$force" != 1 ] && healthz; then # let running work finish first
     local n=0; while curl -s "$S/api/activity" | grep -q '"agent"'; do [ $n = 0 ] && say "agents are busy; waiting for them to finish (use --force to skip)..."; n=$((n+1)); [ $n -gt 360 ] && die "still busy after 30 minutes; use: orcie restart --force"; sleep 5; done
   fi
+  if [ "$server_only" = 1 ]; then stop_server; start_server; return; fi # agents keep running; only the server process restarts
   cmd_down; cmd_up
 }
 cmd_logs_server() { [ -f "$LOG" ] || die "no server log yet ($LOG)"; if [ "${1:-}" = -f ]; then tail -n 100 -f "$LOG"; else tail -n "${1:-100}" "$LOG"; fi; }

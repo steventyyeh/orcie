@@ -8,7 +8,8 @@ export const BROWSER_MIN_MB = 2048; // Chromium shares the container's memory li
 export const SHRINK_MAX_FILL = 0.85; // a disk may only shrink to a size where the data fills at most this much of it
 
 export function limits(hostCpus: number, vmMemMb: number, vmDiskGb: number): Bounds {
-  return { cpusMin: 0.5, cpusMax: Math.max(1, hostCpus), memMinMb: 1024, memMaxMb: Math.max(1024, Math.min(32768, vmMemMb)), diskMinGb: 2, diskMaxGb: Math.max(2, Math.min(500, vmDiskGb)) };
+  // Whole numbers only. The ceiling is never below 8 cores / 16 GB / 50 GB so a user may ask for that much; a limit above what the Docker VM really has is only a cap (the UI warns about it).
+  return { cpusMin: 1, cpusMax: Math.max(8, hostCpus), memMinMb: 1024, memMaxMb: Math.max(16384, Math.min(65536, vmMemMb)), diskMinGb: 2, diskMaxGb: Math.max(50, Math.min(500, vmDiskGb)) };
 }
 
 /** "4g", "512m", "20GB", "2.5" (plain numbers use defaultUnit). Returns the amount in the target unit, or throws. */
@@ -23,12 +24,15 @@ const num = (v: unknown, what: string) => { const n = Number(v); if (!Number.isF
 export type Warning = string;
 /** Validates a requested change against the bounds. Missing fields keep the current value. */
 export function validateRes(input: any, cur: Res, b: Bounds, browser = true): { res: Res; warnings: Warning[] } {
-  const cpus = input?.cpus === undefined ? cur.cpus : Math.round(num(input.cpus, "CPU") * 100) / 100;
+  const cpus = input?.cpus === undefined ? cur.cpus : num(input.cpus, "CPU");
   const memoryMb = input?.memoryMb === undefined ? cur.memoryMb : Math.round(num(input.memoryMb, "memory"));
-  const diskGb = input?.diskGb === undefined || input.diskGb === null ? cur.diskGb : Math.round(num(input.diskGb, "disk") * 100) / 100;
+  const diskGb = input?.diskGb === undefined || input.diskGb === null ? cur.diskGb : num(input.diskGb, "disk");
   if (cpus < b.cpusMin || cpus > b.cpusMax) throw new Error(`CPU must be between ${b.cpusMin} and ${b.cpusMax} cores (this host has ${b.cpusMax})`);
   if (memoryMb < b.memMinMb || memoryMb > b.memMaxMb) throw new Error(`memory must be between ${b.memMinMb / 1024} and ${Math.floor(b.memMaxMb / 102.4) / 10} GB (what the Docker VM has)`);
   if (diskGb !== null && (diskGb < b.diskMinGb || diskGb > b.diskMaxGb)) throw new Error(`disk must be between ${b.diskMinGb} and ${b.diskMaxGb} GB`);
+  if (input?.cpus !== undefined && !Number.isInteger(cpus)) throw new Error("CPU must be a whole number of cores");
+  if (input?.diskGb != null && !Number.isInteger(diskGb)) throw new Error("disk must be a whole number of GB");
+  if (input?.memoryMb !== undefined && memoryMb % 1024 !== 0) throw new Error("memory must be a whole number of GB");
   const warnings: Warning[] = [];
   if (browser && memoryMb < BROWSER_MIN_MB) warnings.push(`Under ${BROWSER_MIN_MB / 1024} GB the agent's browser may crash: Chromium shares this memory limit.`);
   return { res: { cpus, memoryMb, diskGb }, warnings };

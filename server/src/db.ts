@@ -18,6 +18,7 @@ export function openDb(path: string) {
   for (const col of ["kind text not null default 'claude'", "last_seen text", "last_reply text", "res text"]) { try { db.exec(`alter table agents add column ${col}`); } catch { /* already there */ } }
   for (const ddl of ["alter table messages add column addr text", "alter table conversations add column meta text", "alter table messages add column files text"]) { try { db.exec(ddl); } catch { /* already there */ } }
   db.exec("create table if not exists promises (id integer primary key autoincrement, agent text not null, text text not null, conv text, status text not null default 'active', note text, created text not null, updated text not null)");
+  db.exec("create table if not exists reminders (id integer primary key autoincrement, agent text not null, conv text, note text not null, due text not null, status text not null default 'pending', auto integer not null default 0, created text not null, fired text)");
   db.exec("create table if not exists files (id text primary key, name text not null, size integer not null, type text not null, by text not null, at text not null)");
   db.exec("create table if not exists memstate (agent text not null, conv text not null, at text not null, hash text not null, primary key (agent, conv))");
   db.exec("create table if not exists pending (agent text not null, conv text not null, primary key (agent, conv))");
@@ -55,6 +56,12 @@ export function openDb(path: string) {
     listPromises: (agent?: string, status?: string) => q(`select * from promises where (? is null or agent = ?) and (? is null or status = ?) order by id desc limit 500`).all(agent ?? null, agent ?? null, status ?? null, status ?? null) as any[],
     getPromise: (id: number) => (q("select * from promises where id = ?").get(id) as any) ?? null,
     setPromise: (id: number, status: string, note: string | null) => void q("update promises set status = ?, note = coalesce(?, note), updated = ? where id = ?").run(status, note, new Date().toISOString(), id),
+    addReminder: (agent: string, conv: string | null, note: string, due: string, auto: boolean) => Number(q("insert into reminders (agent, conv, note, due, status, auto, created) values (?, ?, ?, ?, 'pending', ?, ?)").run(agent, conv, note, due, auto ? 1 : 0, new Date().toISOString()).lastInsertRowid),
+    listReminders: (agent?: string, status?: string) => q("select * from reminders where (? is null or agent = ?) and (? is null or status = ?) order by due asc limit 500").all(agent ?? null, agent ?? null, status ?? null, status ?? null) as any[],
+    getReminder: (id: number) => (q("select * from reminders where id = ?").get(id) as any) ?? null,
+    dueReminders: (now: string) => q("select * from reminders where status = 'pending' and due <= ? order by due asc").all(now) as any[],
+    setReminder: (id: number, status: string) => void q("update reminders set status = ?, fired = ? where id = ?").run(status, status === "fired" ? new Date().toISOString() : null, id),
+    delReminders: (agent: string) => void q("delete from reminders where agent = ?").run(agent),
     addFile: (f: { id: string; name: string; size: number; type: string; by: string }) => void q("insert into files (id, name, size, type, by, at) values (?, ?, ?, ?, ?, ?)").run(f.id, f.name, f.size, f.type, f.by, new Date().toISOString()),
     getFile: (id: string) => (q("select * from files where id = ?").get(id) as any) ?? null,
     addPending: (agent: string, conv: string) => void q('insert or ignore into pending (agent, conv) values (?, ?)').run(agent, conv),
@@ -62,6 +69,9 @@ export function openDb(path: string) {
     loadPending: () => (q('select agent, conv from pending').all() as any[]),
     getSetting: (k: string) => ((q("select v from settings where k = ?").get(k) as { v: string } | undefined)?.v ?? null),
     setSetting: (k: string, v: string | null) => void (v === null ? q("delete from settings where k = ?").run(k) : q("insert into settings (k, v) values (?, ?) on conflict(k) do update set v = excluded.v").run(k, v)),
+    delConv: (id: string) => tx(() => { // a room and everything in it (messages, search index, cursors, per-agent memory markers)
+      for (const sql of ["delete from messages_fts where conv = ?", "delete from messages where conv = ?", "delete from members where conv = ?", "delete from cursors where conv = ?", "delete from memstate where conv = ?", "delete from pending where conv = ?", "delete from conversations where id = ?"]) q(sql).run(id);
+    }),
     delAgent: (name: string) => void q("delete from agents where name = ?").run(name),
     putConv: (c: any) => tx(() => { putConv.run(c.id, c.kind, c.title, c.mode ?? null, new Date().toISOString()); for (const m of c.members) addMember.run(c.id, m); if (c.origin || c.async) q("update conversations set meta = ? where id = ?").run(JSON.stringify({ ...(c.origin ? { origin: c.origin } : {}), ...(c.async ? { async: true } : {}) }), c.id); }),
     addMsg: (conv: string, m: any) => tx(() => {

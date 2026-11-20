@@ -4,21 +4,25 @@ import { limits, parseSize, validateRes, plan, usageLevel, PRESETS } from "../sr
 
 const b = limits(4, 7923, 39), cur = { cpus: 2, memoryMb: 4096, diskGb: 20 };
 test("bounds follow the host: cores, VM memory (capped at 32 GB), VM disk", () => {
-  assert.equal(b.cpusMax, 4); assert.equal(b.cpusMin, 0.5); assert.equal(b.memMaxMb, 7923); assert.equal(b.diskMaxGb, 39);
-  assert.equal(limits(16, 99999, 2000).memMaxMb, 32768); assert.equal(limits(16, 99999, 2000).diskMaxGb, 500);
+  assert.equal(b.cpusMax, 8); assert.equal(b.cpusMin, 1); assert.equal(b.memMaxMb, 16384); assert.equal(b.diskMaxGb, 50); // never below 8 cores / 16 GB / 50 GB
+  assert.equal(limits(16, 99999, 2000).cpusMax, 16); assert.equal(limits(16, 99999, 2000).memMaxMb, 65536); assert.equal(limits(16, 99999, 2000).diskMaxGb, 500);
 });
 test("sizes parse with units and reject junk", () => {
   assert.equal(parseSize("4g", "mb"), 4096); assert.equal(parseSize("512m", "mb"), 512); assert.equal(parseSize("20", "gb"), 20); assert.equal(parseSize("20GB", "gb"), 20); assert.equal(parseSize("1536m", "gb"), 1.5);
   for (const bad of ["", "abc", "-4g", "4 x", "1e3g", "$(id)"]) assert.throws(() => parseSize(bad, "mb"), /cannot read size/);
 });
 test("validateRes: any value inside the bounds, missing fields keep the current value", () => {
-  assert.deepEqual(validateRes({ cpus: 1.5 }, cur, b).res, { cpus: 1.5, memoryMb: 4096, diskGb: 20 });
+  assert.deepEqual(validateRes({ cpus: 3 }, cur, b).res, { cpus: 3, memoryMb: 4096, diskGb: 20 });
   assert.deepEqual(validateRes({ memoryMb: 3072, diskGb: 33 }, cur, b).res, { cpus: 2, memoryMb: 3072, diskGb: 33 });
   assert.deepEqual(validateRes({}, cur, b).res, cur);
+  assert.deepEqual(validateRes({ cpus: 8, memoryMb: 16384, diskGb: 50 }, cur, b).res, { cpus: 8, memoryMb: 16384, diskGb: 50 });
+});
+test("cores, memory (GB) and disk (GB) must be whole numbers", () => {
+  assert.throws(() => validateRes({ cpus: 1.5 }, cur, b), /whole number/); assert.throws(() => validateRes({ diskGb: 20.5 }, cur, b), /whole number/); assert.throws(() => validateRes({ memoryMb: 2560 }, cur, b), /whole number/);
 });
 test("validateRes rejects out-of-range and non-numeric values", () => {
-  assert.throws(() => validateRes({ cpus: 0.25 }, cur, b), /CPU must be between/); assert.throws(() => validateRes({ cpus: 5 }, cur, b), /CPU must be between/);
-  assert.throws(() => validateRes({ memoryMb: 512 }, cur, b), /memory must be between/); assert.throws(() => validateRes({ memoryMb: 9000 }, cur, b), /memory must be between/);
+  assert.throws(() => validateRes({ cpus: 0 }, cur, b), /CPU must be between/); assert.throws(() => validateRes({ cpus: 9 }, cur, b), /CPU must be between/);
+  assert.throws(() => validateRes({ memoryMb: 512 }, cur, b), /memory must be between/); assert.throws(() => validateRes({ memoryMb: 17408 }, cur, b), /memory must be between/);
   assert.throws(() => validateRes({ diskGb: 1 }, cur, b), /disk must be between/); assert.throws(() => validateRes({ diskGb: 400 }, cur, b), /disk must be between/);
   assert.throws(() => validateRes({ cpus: "lots" }, cur, b), /must be a number/); assert.throws(() => validateRes({ memoryMb: NaN }, cur, b), /must be a number/);
 });

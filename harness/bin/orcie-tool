@@ -19,6 +19,11 @@ case "${ORCIE_TOOL:-$(basename "$0")}" in
       *) echo 'usage: promise add "<text>" | promise list [active|done|cancelled|all] | promise done <id> [note] | promise cancel <id> [note]' >&2; exit 1 ;;
     esac
     call "$ep" "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
+  remind_me) [ $# -ge 2 ] || { echo 'usage: remind_me <when> "<note: what to do>"   (when: 20m, 2h, 1d, or a UTC time like 2026-11-17T14:10Z; 1 minute to 14 days ahead)' >&2; exit 1; }; w="$1"; shift
+    call /reminders/add "$(node -e 'console.log(JSON.stringify({when:process.argv[1],note:process.argv[2]}))' "$w" "$*")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
+  list_reminders) call /reminders/list '{}' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
+  cancel_reminder) [ $# -ge 1 ] || { echo 'usage: cancel_reminder <id>' >&2; exit 1; }
+    call /reminders/cancel "$(node -e 'console.log(JSON.stringify({id:Number(process.argv[1])}))' "$1")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;
   share_file) [ $# -ge 1 ] && [ -f "$1" ] || { echo 'usage: share_file <path> ["caption"]' >&2; exit 1; }
     f="$1"; shift; body="$(node -e 'const fs=require("fs"),p=require("path");const f=process.argv[1];console.log(JSON.stringify({name:p.basename(f),data:fs.readFileSync(f).toString("base64"),caption:process.argv[2]||""}))' "$f" "$*")"
     printf '%s' "$body" | curl -s --max-time 300 -X POST "${ORCIE_SERVER:-http://host.docker.internal:8081}/files/upload" -H 'content-type: application/json' -H "Authorization: Bearer ${ORCIE_AGENT_TOKEN}" -H "X-Orcie-Conversation: ${ORCIE_CONVERSATION}" --data-binary @- | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:j.text)})' ;;

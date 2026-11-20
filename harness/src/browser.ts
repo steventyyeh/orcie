@@ -40,16 +40,25 @@ export const blocked = (method: string) => /^Input\./.test(method) || /^Page\.(n
 
 // ---- processes ----
 const procs = new Map<string, ChildProcess>();
-function supervise(name: string, cmd: string, args: string[], env: Record<string, string> = {}) {
+function supervise(name: string, cmd: string, args: string[] | (() => string[]), env: Record<string, string> = {}) {
   let delay = 1000;
   const go = () => {
-    const p = spawn(cmd, args, { stdio: "ignore", env: { ...process.env, DISPLAY, ...env } }); procs.set(name, p);
+    const p = spawn(cmd, typeof args === "function" ? args() : args, { stdio: "ignore", env: { ...process.env, DISPLAY, ...env } }); procs.set(name, p);
     const t = Date.now();
     p.on("exit", () => { delay = Date.now() - t > 20_000 ? 1000 : Math.min(delay * 2, 10_000); setTimeout(go, delay).unref(); });
     p.on("error", () => {});
   };
   go();
 }
+// Extensions an agent installed into its own volume (e.g. the LINE extension via line-app): every /data/browser-extensions/<name> with a manifest is loaded.
+// Computed on every (re)start, so installing one and restarting Chromium is enough.
+const EXT_DIR = "/data/browser-extensions";
+const chromiumArgs = () => {
+  let exts: string[] = []; try { exts = readdirSync(EXT_DIR).map((d) => `${EXT_DIR}/${d}`).filter((d) => existsSync(`${d}/manifest.json`)); } catch { /* none */ }
+  return ["--no-sandbox", `--remote-debugging-port=${CDP}`, "--remote-debugging-address=127.0.0.1", `--user-data-dir=${PROFILE}`, "--window-position=0,0", "--window-size=1280,800",
+    "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--test-type", "--disable-infobars", "--hide-crash-restore-bubble", "--disable-session-crashed-bubble",
+    ...(exts.length ? [`--load-extension=${exts.join(",")}`, "--disable-features=DisableLoadExtensionCommandLineSwitch"] : []), "about:blank"];
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function startBrowser() {
   if (!enabled) return;
@@ -57,8 +66,7 @@ export async function startBrowser() {
   supervise("xvfb", "Xvfb", [DISPLAY, "-screen", "0", "1280x800x24", "-ac", "-noreset"]);
   for (let i = 0; i < 50 && !existsSync("/tmp/.X11-unix/X99"); i++) await sleep(100);
   supervise("x11vnc", "x11vnc", ["-display", DISPLAY, "-forever", "-shared", "-nopw", "-rfbport", "5900", "-localhost", "-quiet"]);
-  supervise("chromium", "/usr/local/bin/orcie-chromium", ["--no-sandbox", `--remote-debugging-port=${CDP}`, "--remote-debugging-address=127.0.0.1", `--user-data-dir=${PROFILE}`, "--window-position=0,0", "--window-size=1280,800",
-    "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--test-type", "--disable-infobars", "--hide-crash-restore-bubble", "--disable-session-crashed-bubble", "about:blank"]);
+  supervise("chromium", "/usr/local/bin/orcie-chromium", chromiumArgs);
   startProxy();
 }
 

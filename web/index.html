@@ -50,9 +50,9 @@ button{font:inherit;color:inherit;cursor:pointer}
 .fld{width:100%;box-sizing:border-box;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);padding:var(--s2) var(--s3);font:inherit;font-size:14px}
 textarea.fld{resize:vertical;min-height:64px}
 dialog.wide{width:min(640px,94vw)}
-.rrow{display:grid;grid-template-columns:90px 1fr 92px;gap:var(--s3);align-items:center;margin-top:var(--s3)}.rrow input[type=range]{width:100%;accent-color:var(--accent)}.rrow .fld{padding:var(--s1) var(--s2)}
+.rrow{display:grid;grid-template-columns:112px 1fr 84px;white-space:nowrap;gap:var(--s3);align-items:center;margin-top:var(--s3)}.rrow input[type=range]{width:100%;accent-color:var(--accent)}.rrow .fld{padding:var(--s1) var(--s2)}.rrow .l{white-space:nowrap}.presets .btn{white-space:nowrap}
 .ubar{height:6px;border-radius:3px;background:var(--line);overflow:hidden;margin:2px 0 0}.ubar i{display:block;height:100%;background:var(--green)}.ubar i.warn{background:var(--amber)}.ubar i.full{background:var(--badge)}
-.usage{display:grid;grid-template-columns:90px 1fr;gap:var(--s1) var(--s3);font-size:13px;color:var(--mute);margin-top:var(--s2)}
+.usage{display:grid;grid-template-columns:112px 1fr;gap:var(--s1) var(--s3);font-size:13px;color:var(--mute);margin-top:var(--s2)}
 .rnote{font-size:13px;margin-top:var(--s3);padding:var(--s2) var(--s3);border-radius:var(--r2);background:var(--mention-bg);color:var(--mention-fg)}.rnote.warn{background:#fff4d6;color:#6b4e00}
 .btn.danger{color:var(--badge);border-color:var(--badge)}.btn.danger:hover{background:var(--badge);color:#fff}
 .presets{display:flex;flex-wrap:wrap;gap:var(--s2);margin-top:var(--s2)}dialog.wide form{max-height:86vh;overflow:auto}
@@ -104,7 +104,7 @@ kbd{font:11px/1 inherit;padding:1px 5px;border:1px solid var(--line);border-bott
 /* ---------- sidebar ---------- */
 aside{width:264px;background:var(--side);color:var(--side-fg);display:flex;flex-direction:column;flex-shrink:0;border-right:1px solid var(--side-line);--thumb:var(--side-thumb)}
 .ws{height:var(--hdr-h);display:flex;align-items:center;gap:var(--s2);padding:0 var(--s3) 0 var(--s4);border-bottom:1px solid var(--side-line);color:var(--side-title);font-size:16px;font-weight:700;flex-shrink:0}
-.ws .logo{width:22px;height:22px;fill:currentColor;stroke:none}.ws .sp{flex:1}
+.ws .logo{width:22px;height:22px;fill:currentColor;stroke:none}.ws .sp{flex:1;min-width:0}.ws .btn{flex-shrink:0}
 .ws .btn{color:var(--side-title);background:var(--side-btn);border-color:transparent}.ws .btn:hover{background:var(--side-soft)}
 .sbox{position:relative;padding:var(--s3) var(--s3) var(--s1)}
 .sbox .ic{position:absolute;left:calc(var(--s3) + 10px);top:calc(var(--s3) + 9px);width:16px;height:16px;color:var(--side-fg);pointer-events:none}
@@ -184,6 +184,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 .body p{margin:0}.body p+p,.body ul+p,.body p+ul,.body ol+p,.body p+ol,.body pre+p,.body p+pre{margin-top:var(--s2)}
 .body ul,.body ol{margin:var(--s1) 0;padding-left:var(--s5)}
 .body code{background:var(--card);border:1px solid var(--line);color:var(--code);border-radius:4px;padding:1px 5px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.body .tbl{overflow-x:auto;margin:var(--s2) 0}.body table{border-collapse:collapse;font-size:13px;min-width:50%}.body th,.body td{border:1px solid var(--line);padding:var(--s1) var(--s2);text-align:left;vertical-align:top}.body th{background:var(--card);font-weight:600}.body p.h{font-weight:600;margin-top:var(--s2)}.body p.h1{font-size:17px}.body p.h2{font-size:15px}
 .body pre{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:var(--s3);overflow:auto;margin:var(--s1) 0}
 .body pre code{background:none;border:0;color:var(--fg);padding:0}
 .body a{color:var(--link)}
@@ -239,6 +240,20 @@ dialog .acts{display:flex;gap:var(--s2);justify-content:flex-end;margin-top:var(
 .chk{display:flex;gap:var(--s3);align-items:center;min-height:32px;font-size:14px}.chk .av{margin:0}.chk span b{font-weight:600}
 .toast{position:fixed;bottom:var(--s5);left:50%;transform:translateX(-50%);background:#1d1c1d;color:#fff;padding:var(--s3) var(--s4);border-radius:var(--r2);z-index:50;box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:14px}
 
+/* ---------- org chart ---------- */
+dialog.orgd{width:min(1100px,96vw)}dialog.orgd form{max-height:88vh;overflow:auto}
+.org{overflow:auto;padding:var(--s3) 0 var(--s4)}.org ul{display:flex;justify-content:center;margin:0;padding:20px 0 0;list-style:none;position:relative}
+.org>ul{padding-top:0;width:max-content;min-width:100%}.org li{position:relative;padding:20px 8px 0;display:flex;flex-direction:column;align-items:center}
+.org li::before,.org li::after{content:"";position:absolute;top:0;right:50%;width:50%;height:20px;border-top:1px solid var(--line-strong)}
+.org li::after{right:auto;left:50%;border-left:1px solid var(--line-strong)}
+.org li:only-child::before,.org li:only-child::after{display:none}.org li:only-child{padding-top:20px}
+.org li:first-child::before,.org li:last-child::after{border:0}.org li:last-child::before{border-right:1px solid var(--line-strong);border-radius:0 6px 0 0}.org li:first-child::after{border-radius:6px 0 0 0}
+.org ul ul::before{content:"";position:absolute;top:0;left:50%;height:20px;border-left:1px solid var(--line-strong)}
+.org>ul>li{padding-top:0}.org>ul>li::before,.org>ul>li::after{display:none}
+.onode{display:flex;align-items:center;gap:var(--s2);min-width:150px;max-width:220px;padding:var(--s2) var(--s3);border:1px solid var(--line-strong);border-radius:var(--r2);background:var(--card,var(--bg));color:var(--fg);text-align:left;cursor:pointer;font:inherit}
+.onode:hover,.onode:focus-visible{background:var(--hover);outline:none;box-shadow:var(--focus)}.onode.you{cursor:default;border-style:dashed}
+.onode b{display:block;font-size:14px}.onode small{display:block;color:var(--mute);font-size:12px;line-height:1.3}.onode .t{display:inline-block;margin-top:2px;padding:0 6px;border:1px solid var(--line);border-radius:99px;font-size:11px;color:var(--mute)}
+.onode .dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex:none}.onode .dot.off{background:var(--faint)}
 /* ---------- hire wizard ---------- */
 dialog.xl{width:min(1240px,96vw);height:min(88vh,860px);max-height:none}
 dialog.xl #wiz{display:flex;flex-direction:column;height:100%;overflow:hidden}
@@ -295,7 +310,7 @@ dialog.xl #wiz{display:flex;flex-direction:column;height:100%;overflow:hidden}
 </defs></svg>
 
 <aside>
-  <div class="ws"><svg class="logo ic"><use href="#i-logo"/></svg><span>Orcie</span><div class="sp"></div><button class="btn sm" id="compose" title="Hire a new agent"><svg class="ic"><use href="#i-plus"/></svg>Hire agent</button></div>
+  <div class="ws"><svg class="logo ic"><use href="#i-logo"/></svg><span>Orcie</span><div class="sp"></div><button class="btn sm" id="orgBtn" title="Org chart of all agents" aria-label="Org chart"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="5" rx="1"/><rect x="2.5" y="16" width="6" height="5" rx="1"/><rect x="15.5" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M5.5 16v-4h13v4"/></svg></button><button class="btn sm" id="compose" title="Hire a new agent"><svg class="ic"><use href="#i-plus"/></svg>Hire</button></div>
   <div class="sbox"><svg class="ic"><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search" aria-label="Search all conversations" autocomplete="off"></div>
   <div class="nav" id="nav"></div>
   <div class="foot" id="foot"><span id="footText"></span><button class="iconbtn" id="themeBtn" title="Change theme" aria-label="Change theme"><svg class="ic"><use href="#i-palette"/></svg></button></div>
@@ -368,13 +383,14 @@ dialog.xl #wiz{display:flex;flex-direction:column;height:100%;overflow:hidden}
   <h3 id="resTitle">Resources and model</h3><p class="sub">Limits apply to this agent's container. CPU and memory change live; growing the disk is live too. Nothing is lost.</p>
   <label class="l">Model</label><select class="fld" id="rsModel"></select>
   <label class="l">Quick picks</label><div class="presets" id="rsPresets"></div>
-  <div class="rrow"><label class="l" style="margin:0">CPU (cores)</label><input type="range" id="rsCpuR"><input class="fld" type="number" id="rsCpu" step="0.5"></div>
-  <div class="rrow"><label class="l" style="margin:0">Memory (GB)</label><input type="range" id="rsMemR"><input class="fld" type="number" id="rsMem" step="0.5"></div>
+  <div class="rrow"><label class="l" style="margin:0">CPU (cores)</label><input type="range" id="rsCpuR"><input class="fld" type="number" inputmode="numeric" id="rsCpu" step="1"></div>
+  <div class="rrow"><label class="l" style="margin:0">Memory (GB)</label><input type="range" id="rsMemR"><input class="fld" type="number" id="rsMem" step="1"></div>
   <div class="rrow"><label class="l" style="margin:0">Disk (GB)</label><input type="range" id="rsDiskR"><input class="fld" type="number" id="rsDisk" step="1"></div>
   <div class="usage" id="rsUsage"></div>
   <div id="rsNotes"></div>
   <div class="acts" style="justify-content:space-between"><button type="button" class="btn danger" id="rsLay">Lay off this agent…</button><span style="display:flex;gap:var(--s2)"><button type="button" class="btn" onclick="resDlg.close()">Close</button><button class="btn p" id="rsApply">Apply</button></span></div>
 </form></dialog>
+<dialog id="orgDlg" class="orgd"><form method="dialog"><h3>Org chart</h3><p class="sub" id="orgSub"></p><div class="org" id="orgBody"></div><div class="acts"><button class="btn">Close</button></div></form></dialog>
 <dialog id="layDlg"><form id="layForm" method="dialog">
   <h3 id="layTitle">Lay off</h3>
   <p class="sub" id="laySub"></p>
@@ -383,6 +399,8 @@ dialog.xl #wiz{display:flex;flex-direction:column;height:100%;overflow:hidden}
   <label class="l">Type the agent's name to confirm</label><input class="fld" id="layName" autocomplete="off">
   <div class="acts"><button type="button" class="btn" onclick="layDlg.close()">Cancel</button><button class="btn danger" id="layGo" disabled>Lay off</button></div>
 </form></dialog>
+<dialog id="appDlg" class="wide"><form method="dialog"><h3 id="appTitle">Apps</h3><p class="sub">Give this agent an app, then log in yourself by scanning the QR code in its live screen. The agent is told the app is read only (it must never send or change anything). This is an instruction, not a technical lock, so try it with a spare account first.</p><div id="appList"></div><div class="acts"><button class="btn">Close</button></div></form></dialog>
+<dialog id="remDlg" class="wide"><form method="dialog"><h3 id="remTitle">Reminders</h3><p class="sub">Follow-ups this agent booked for itself with remind_me (times are UTC). Automatic ones are booked when it says work is still running.</p><div id="remList"></div><div class="acts"><button class="btn">Close</button></div></form></dialog>
 <dialog id="promDlg" class="wide"><form method="dialog"><h3 id="promTitle">Promises</h3><p class="sub">Commitments this agent made to people. You can close them too.</p><div id="promList"></div><div class="acts"><button class="btn">Close</button></div></form></dialog>
 
 <script>
@@ -415,7 +433,18 @@ function md(src) {
     .replace(/(^|\s)@([a-z][a-z0-9-]*)/g, (m, p, n) => (names().includes(n) || n === "user") ? `${p}<span class="at" style="--h:${hue(n)}">@${n}</span>` : m);
   let out = "", list = null;
   const close = () => { if (list) { out += `</${list}>`; list = null; } };
-  for (const line of s.split("\n")) {
+  const lines = s.split("\n"), cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*\|.*\|?\s*$/.test(line) && line.includes("|")) { // a table: consecutive | rows (blank lines between rows are tolerated)
+      const rows = []; let j = i;
+      while (j < lines.length) { if (/^\s*\|/.test(lines[j])) { rows.push(lines[j]); j++; } else if (!lines[j].trim() && j + 1 < lines.length && /^\s*\|/.test(lines[j + 1]) && rows.length) j++; else break; }
+      i = j - 1; close();
+      const sep = (r) => cells(r).every((c) => /^:?-{2,}:?$/.test(c)), head = rows.length > 1 && sep(rows[1]), body = rows.filter((r, k) => !sep(r) && !(head && k === 0));
+      out += `<div class="tbl"><table>${head ? `<thead><tr>${cells(rows[0]).map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead>` : ""}<tbody>${body.map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)/); if (h) { close(); out += `<p class="h h${h[1].length}">${inline(h[2])}</p>`; continue; }
     const b = line.match(/^\s*[-*•]\s+(.*)/), n = line.match(/^\s*\d+[.)]\s+(.*)/);
     if (b || n) { const t = b ? "ul" : "ol"; if (list !== t) { close(); out += `<${t}>`; list = t; } out += `<li>${inline((b || n)[1])}</li>`; }
     else { close(); if (/^\u0000\d+\u0000$/.test(line.trim())) out += line.trim(); else if (line.trim()) out += `<p>${inline(line)}</p>`; }
@@ -458,7 +487,7 @@ function drawNav() {
   nav.append(
     section("rooms", "Rooms", "Create a room", openRoomDlg, convs.filter((c) => c.kind === "room").map((c) => ({
       id: c.id, text: c.title, icon: `<span class="ico hashc" style="--h:${hue(c.title)}">${ic("hash")}</span>`, badge: unread(c), soft: true, busy: c.members.some((m) => typing[c.id]?.[m]) }))),
-    section("agents", "Agents", "Hire an agent", openWizard, state.agents.map((a) => {
+    section("agents", "Agents", "Hire an agent", hireClick, state.agents.map((a) => {
       const c = convs.find((x) => x.id === "dm:" + a.name) || { id: "dm:" + a.name };
       return { id: c.id, text: a.name, badge: unread(c), busy: busy.has(a.name),
         icon: `<span class="ico"><span class="av sm" style="--h:${hue(a.name)}">${a.name[0].toUpperCase()}<span class="pres ${(a.kind === "external" || a.kind === "tmux") && !a.online ? "off" : ""}"></span></span></span>`, tag: a.kind === "external" ? "ext" : a.kind === "tmux" ? "mac" : "" }; })),
@@ -500,7 +529,7 @@ function drawHeader() {
   if (!room && !ro && agent) { // Manage: HR profile, promises, lay off
     const w = document.createElement("div"); w.className = "relpop"; w.innerHTML = `<button class="btn sm">Manage</button>`;
     w.firstChild.onclick = (e) => { e.stopPropagation(); if (w.querySelector(".pop")) return closePops(); closePops(); const p = document.createElement("div"); p.className = "pop"; p.dataset.pop = "1"; p.style.cssText = "top:36px;right:0;min-width:160px";
-      [["Edit profile", () => editProfile(agent)], ["Resources and model", () => showResources(agent.name)], ["Promises", () => showPromises(agent.name)], ["Lay off…", () => removeAgent(agent.name), "danger"]].forEach(([t, fn, cls]) => { const x = document.createElement("div"); x.className = "row"; if (cls) x.style.color = "var(--badge)"; x.textContent = t; x.onclick = () => { closePops(); fn(); }; p.append(x); }); w.append(p); };
+      [["Edit profile", () => editProfile(agent)], ["Resources and model", () => showResources(agent.name)], ["Apps", () => showApps(agent.name)], ["Reminders", () => showReminders(agent.name)], ["Promises", () => showPromises(agent.name)], ...(agent.canHire ? [] : [["Lay off…", () => removeAgent(agent.name), "danger"]])].forEach(([t, fn, cls]) => { const x = document.createElement("div"); x.className = "row"; if (cls) x.style.color = "var(--badge)"; x.textContent = t; x.onclick = () => { closePops(); fn(); }; p.append(x); }); w.append(p); };
     h.append(w);
   }
   Object.entries(browsingConvs()).forEach(([cid, ags]) => { if (cid !== cur) ags.forEach((a) => { const b = document.createElement("button"); b.className = "btn sm bchip"; b.textContent = `${a} is browsing`; b.title = "Open the conversation where the live browser is"; b.onclick = () => open(cid); h.append(b); }); }); // visible from any conversation
@@ -511,6 +540,10 @@ function drawHeader() {
   seg.innerHTML = `<button data-m="parallel" class="${seq ? "" : "on"}" title="All agents reply at the same time">Parallel</button><button data-m="sequential" class="${seq ? "on" : ""}" title="Agents reply one at a time, each seeing earlier replies">In turn</button>`;
   seg.querySelectorAll("button").forEach((b) => (b.onclick = async () => { if ((b.dataset.m === "sequential") === seq) return; await api(`/rooms/${encodeURIComponent(cur)}/mode`, "POST", { mode: b.dataset.m }); refresh(); }));
   h.append(seg);
+  const del = document.createElement("button"); del.className = "btn sm danger"; del.textContent = "Delete room"; del.title = "Delete this room and its history";
+  del.onclick = async () => { if (!confirm(`Delete #${conv.title} and all ${conv.messages.length} of its messages? This cannot be undone. Agents keep their own memory notes.`)) return;
+    try { await api(`/rooms/${encodeURIComponent(conv.id)}?confirm=${encodeURIComponent(conv.title)}`, "DELETE"); const t = conv.title; await refresh(); toast(`Deleted #${t}`); const d = defaultConv(); if (d) open(d.id, undefined, "replace"); } catch (e) { toast(e.message); } };
+  h.append(del);
   const avail = state.agents.filter((a) => !conv.members.includes(a.name));
   if (avail.length) { const w = document.createElement("div"); w.className = "relpop"; w.innerHTML = `<button class="btn sm">${ic("plus")}Add agent</button>`;
     w.firstChild.onclick = (e) => { e.stopPropagation(); if (w.querySelector(".pop")) return closePops(); closePops(); const p = document.createElement("div"); p.className = "pop"; p.style.cssText = "top:36px;right:0"; p.dataset.pop = 1;
@@ -608,6 +641,31 @@ function editProfile(agent) {
       profDlg.close(); toast(r.needsRecreate ? "Saved. Tool changes apply after a recreate." : "Profile saved"); await refresh(); drawHeader(); } catch (err) { toast(err.message); } };
   profDlg.showModal();
 }
+async function showApps(name) {
+  $("appTitle").textContent = `Apps: ${name}`; const box = $("appList"); let timer = null;
+  const draw = async () => { let r; try { r = await api(`/agents/${encodeURIComponent(name)}/apps`); } catch (err) { box.innerHTML = `<div class="rnote warn">${esc(err.message)}</div>`; return false; }
+    box.innerHTML = r.browser ? "" : '<div class="rnote warn">This agent\'s browser is turned off, so it has no live screen. Turn the browser on in Edit profile first.</div>'; let busy = false;
+    r.apps.forEach((a) => { const d = document.createElement("div"); d.className = "prow"; const job = a.job, working = job && job.state === "working"; busy = busy || working;
+      const status = working ? `${job.action}...` : job ? "failed" : !a.installed ? "not installed" : a.running === null ? "installed" : a.running ? "running" : "installed, not running";
+      d.innerHTML = `<div class="t"><b>${esc(a.label)}</b><div class="st" style="text-transform:none;font-weight:400">${esc(a.blurb)}</div>${a.experimental ? `<div class="st" style="text-transform:none;font-weight:400;color:var(--badge)">${esc(a.experimental)}</div>` : ""}${job && job.state === "failed" ? `<div class="st" style="text-transform:none;color:var(--badge)">${esc(job.message)}</div>` : ""}</div><span class="st">${status}</span>`;
+      const mk = (label, act, cls = "") => { const b = document.createElement("button"); b.type = "button"; b.className = `btn sm ${cls}`; b.textContent = label; b.disabled = working || !r.browser; b.onclick = async () => { try { await api(`/agents/${encodeURIComponent(name)}/apps/${a.id}`, "POST", { action: act }); } catch (err) { toast(err.message); } draw(); }; d.append(b); };
+      if (!a.installed) mk(a.id === "wechat" ? "Install (about 200 MB)" : "Install", "install", "p");
+      else { a.actions.filter((x) => x !== "install").forEach((x) => mk(x === "open" ? "Open" : x[0].toUpperCase() + x.slice(1), x)); }
+      if (a.installed) { const b = document.createElement("button"); b.type = "button"; b.className = "btn sm"; b.textContent = "Show screen"; b.onclick = () => { appDlg.close(); openBrowser(name); }; d.append(b); }
+      box.append(d); });
+    return busy; };
+  const loop = async () => { const busy = await draw(); clearTimeout(timer); if (appDlg.open && busy) timer = setTimeout(loop, 3000); };
+  appDlg.addEventListener("close", () => clearTimeout(timer), { once: true }); await loop(); if (!appDlg.open) appDlg.showModal();
+  box.addEventListener("click", () => setTimeout(() => { if (appDlg.open) loop(); }, 400));
+}
+async function showReminders(name) {
+  $("remTitle").textContent = `Reminders: ${name}`; const box = $("remList"), utc = (t) => new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  const draw = async () => { const { reminders } = await api(`/reminders?agent=${encodeURIComponent(name)}`); const rows = reminders.filter((r) => r.status === "pending").concat(reminders.filter((r) => r.status !== "pending").sort((a, b) => b.due.localeCompare(a.due)).slice(0, 8));
+    box.innerHTML = rows.length ? "" : '<div class="prow"><div class="t">No reminders yet.</div></div>';
+    rows.forEach((r) => { const d = document.createElement("div"); d.className = "prow"; d.innerHTML = `<div class="t ${r.status !== "pending" ? "done" : ""}">${esc(r.note.length > 240 ? r.note.slice(0, 240) + "…" : r.note)}<div class="st">${utc(r.due)}${r.auto ? " · automatic" : ""}</div></div><span class="st">${r.status}</span>`;
+      if (r.status === "pending") { const b = document.createElement("button"); b.type = "button"; b.className = "btn sm"; b.textContent = "Cancel"; b.onclick = async () => { await api(`/reminders/${r.id}`, "DELETE"); draw(); }; d.append(b); } box.append(d); }); };
+  await draw(); remDlg.showModal();
+}
 async function showPromises(name) {
   $("promTitle").textContent = `Promises: ${name}`; const box = $("promList");
   const draw = async () => { const { promises } = await api(`/promises?agent=${encodeURIComponent(name)}`); box.innerHTML = promises.length ? "" : '<div class="prow"><div class="t">No promises yet.</div></div>';
@@ -624,7 +682,7 @@ async function showResources(name) {
   const setR = (id, min, max, step, v) => { const r = $(id + "R"), n = $(id); [r, n].forEach((x) => { x.min = min; x.max = max; x.step = step; x.value = v; }); r.oninput = () => (n.value = r.value, notes()); n.oninput = () => (r.value = n.value, notes()); };
   $("rsModel").innerHTML = [...new Set([...info.models, info.model])].map((m) => `<option value="${esc(m)}" ${m === info.model ? "selected" : ""}>${esc(m.replace("claude-", ""))}</option>`).join("");
   const legacy = info.res.diskGb === null, curDisk = legacy ? Math.max(5, Math.ceil(info.usage.diskUsedBytes / 2 ** 30 * 1.5) || 20) : info.res.diskGb;
-  setR("rsCpu", bd.cpusMin, bd.cpusMax, 0.5, info.res.cpus); setR("rsMem", 1, Math.floor(memGb(bd.memMaxMb) * 2) / 2, 0.5, memGb(info.res.memoryMb)); setR("rsDisk", bd.diskMinGb, bd.diskMaxGb, 1, curDisk);
+  setR("rsCpu", bd.cpusMin, bd.cpusMax, 1, Math.max(bd.cpusMin, Math.round(info.res.cpus))); setR("rsMem", 1, Math.floor(memGb(bd.memMaxMb)), 1, Math.max(1, Math.round(memGb(info.res.memoryMb)))); setR("rsDisk", bd.diskMinGb, bd.diskMaxGb, 1, curDisk);
   $("rsPresets").innerHTML = ""; Object.entries(info.presets).forEach(([k, v]) => { const b = document.createElement("button"); b.type = "button"; b.className = "btn sm"; b.textContent = `${k[0].toUpperCase() + k.slice(1)}: ${v.cpus} CPU, ${memGb(v.memoryMb)} GB, ${v.diskGb} GB`;
     b.onclick = () => { $("rsCpu").value = $("rsCpuR").value = v.cpus; $("rsMem").value = $("rsMemR").value = memGb(v.memoryMb); $("rsDisk").value = $("rsDiskR").value = v.diskGb; notes(); }; $("rsPresets").append(b); });
   const u = info.usage, bar = (pct) => `<div class="ubar"><i class="${pct >= 99 ? "full" : pct >= 80 ? "warn" : ""}" style="width:${Math.min(100, pct)}%"></i></div>`;
@@ -634,6 +692,7 @@ async function showResources(name) {
      <span>Memory now</span><span>${esc(u.memory)} (${u.memoryPct}%)${bar(u.memoryPct)}</span>
      <span>Disk now</span><span>${legacy ? `${gb(u.diskUsedBytes)} GB used, <b>no size limit yet</b>` : `${gb(u.diskUsedBytes)} of ${gb(u.diskSizeBytes)} GB (${diskPct}%)${bar(diskPct)}`}</span>`;
   function notes() { const n = [], cpu = Number($("rsCpu").value), mem = Number($("rsMem").value), dk = Number($("rsDisk").value);
+    const vm = info.vm; if (vm) { const over = []; if (vm.cpus && cpu > vm.cpus) over.push(`${vm.cpus} cores`); if (vm.memMb && mem * 1024 > vm.memMb) over.push(`${Math.floor(vm.memMb / 1024)} GB of memory`); if (vm.diskGb && dk > vm.diskGb) over.push(`${vm.diskGb} GB of disk`); if (over.length) n.push(["warn", `The Docker VM only has ${over.join(", ")}. The agent is capped at what you set but cannot use more than the VM has. To really give it more, resize the VM (colima stop; colima start --cpu 8 --memory 16 --disk 100), which restarts every agent.`]); }
     if (info.browser && mem < 2) n.push(["warn", "Under 2 GB the agent's browser may crash: Chromium shares this memory limit."]);
     if (legacy) n.push(["", `Disk: this agent has no size limit yet. Applying moves its workspace into a ${dk} GB limited volume. The agent restarts once; the old volume is kept as a backup.`]);
     else if (dk < info.res.diskGb) n.push(["warn", `Shrinking the disk restarts the agent. Data must fit (it uses ${gb(u.diskUsedBytes)} GB).`]);
@@ -649,6 +708,7 @@ async function showResources(name) {
       else toast(err.message); }
     $("rsApply").disabled = false; };
   $("resForm").onsubmit = (ev) => { ev.preventDefault(); apply(false); };
+  $("rsLay").hidden = !!state.agents.find((a) => a.name === name)?.canHire; // the HR agent cannot be laid off
   $("rsLay").onclick = () => { dlg.close(); removeAgent(name); };
   dlg.showModal();
 }
@@ -842,10 +902,31 @@ txt.onkeydown = (e) => {
 // ---- dialogs ----
 function openRoomDlg() {
   $("rTitle").value = "";
-  $("rMembers").innerHTML = state.agents.map((a) => `<label class="chk"><input type="checkbox" value="${a.name}" checked>${av(a.name, "sm")}${esc(a.name)}</label>`).join("") || "<i>Hire an agent first.</i>";
+  $("rMembers").innerHTML = state.agents.map((a) => `<label class="chk"><input type="checkbox" value="${a.name}">${av(a.name, "sm")}${esc(a.name)}</label>`).join("") || "<i>Hire an agent first.</i>";
   roomDlg.showModal();
 }
-$("compose").onclick = openWizard;
+// ---- org chart: you at the top; each agent under its manager (HR profile field); agents without a manager report to you ----
+function renderOrg() {
+  const ag = state.agents, names = new Set(ag.map((a) => a.name)), kids = {}, roots = [];
+  const mgr = (a) => { const m = a.profile?.manager; return m && names.has(m) && m !== a.name ? m : null; };
+  const seen = new Set(); // a manager loop is refused by the server, but never draw one forever
+  for (const a of ag) { let cur = a, hops = 0; while (cur && mgr(cur) && hops++ < 60) cur = ag.find((x) => x.name === mgr(cur)); (hops >= 60 ? roots : mgr(a) ? (kids[mgr(a)] ??= []) : roots).push(a); }
+  const node = (a) => {
+    if (seen.has(a.name)) return ""; seen.add(a.name);
+    const ext = a.kind === "external" || a.kind === "tmux", off = ext && !a.online, tag = a.kind === "tmux" ? "Mac" : a.kind === "external" ? "external" : a.canHire ? "default" : "";
+    const sub = [a.profile?.role, a.profile?.team ? `team ${a.profile.team}` : ""].filter(Boolean).map(esc).join(" · ");
+    const c = (kids[a.name] ?? []).map(node).join("");
+    return `<li><button type="button" class="onode" data-agent="${esc(a.name)}">${av(a.name, "sm")}<span><b>${esc(a.name)}</b>${sub ? `<small>${sub}</small>` : ""}${tag ? `<span class="t">${tag}</span>` : ""}</span><span class="dot ${off ? "off" : ""}" title="${off ? "offline" : "online"}"></span></button>${c ? `<ul>${c}</ul>` : ""}</li>`;
+  };
+  const top = roots.map(node).join("");
+  $("orgBody").innerHTML = `<ul><li><div class="onode you">${av("user", "sm")}<span><b>You</b><small>${ag.length} agent${ag.length === 1 ? "" : "s"}</small></span></div>${top ? `<ul>${top}</ul>` : ""}</li></ul>`;
+  $("orgSub").textContent = ag.length ? "Who reports to whom. Set the manager in an agent's profile (Manage, Edit profile). Click an agent to open its DM." : "No agents yet.";
+  $("orgBody").querySelectorAll(".onode[data-agent]").forEach((b) => { b.onclick = () => { orgDlg.close(); open(`dm:${b.dataset.agent}`); }; });
+}
+$("orgBtn").onclick = () => { renderOrg(); orgDlg.showModal(); };
+// Hiring goes through the HR agent when there is one; the wizard is only the fallback
+function hireClick() { const hr = state.agents.find((a) => a.canHire); if (hr) open(`dm:${hr.name}`); else openWizard(); }
+$("compose").onclick = hireClick;
 // ---- onboarding (Agent HR): chat with HR on the left, live editable agent plan on the right ----
 let wiz = { started: false, history: [], profile: null, busy: false };
 const bub = (cls, t) => { const d = document.createElement("div"); d.className = "bub " + cls; d.textContent = t; $("hrchat").append(d); $("hrchat").scrollTop = 1e9; return d; };

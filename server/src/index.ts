@@ -22,6 +22,8 @@ for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete process.en
 import * as tmuxBridge from "./tmux-bridge.ts";
 import { guard, wsGuard, loadSecret, agentToken } from "./guard.ts";
 import { upgrade } from "./ws-lite.ts";
+import { parseWhen, fmtUtc, wantsFollowUp, AUTO_MS } from "./reminders.ts";
+import { APPS, appById } from "./apps.ts";
 import * as disk from "./disk.ts";
 import { ORCIE_DIR, PREFIX } from "./env.ts";
 import { PRESETS as RES_PRESETS, limits, validateRes, plan as resPlan, usageLevel, parseSize, type Res } from "./resources.ts";
@@ -156,7 +158,7 @@ async function removeAgent(name: string, opts: { archive?: boolean } = {}) {
   for (const c of Object.values(convs)) if (c.kind === "room" && c.members.includes(name)) { c.members = c.members.filter((n) => n !== name); db.delMember(c.id, name); post(c, "system", `${name} was removed from the team.`); }
   for (const k of [...dirty]) if (k.endsWith(`|${name}`)) dirty.delete(k);
   if (a.kind === "tmux") removeHostTools(name);
-  pending.delete(name); db.delAgent(name); db.delMemstate(name); delete agents[name]; diskUse.delete(name); diskLevel.delete(name);
+  pending.delete(name); db.delAgent(name); db.delMemstate(name); db.delReminders(name); delete agents[name]; diskUse.delete(name); diskLevel.delete(name);
   let archived: string | null = null;
   const nd = `${NOTES_DIR}/${name}`;
   if (existsSync(nd)) { archived = `${NOTES_DIR}/_retired/${name}-${Date.now()}`; mkdirSync(`${NOTES_DIR}/_retired`, { recursive: true, mode: 0o700 }); renameSync(nd, archived); }
@@ -182,7 +184,7 @@ async function resourceInfo(name: string) {
     const d = await readDisk(a, res); usage.diskUsedBytes = d.used; usage.diskSizeBytes = d.size; if (res.diskGb !== null) diskUse.set(name, { ...d, at: Date.now() });
   } catch { /* container not running */ }
   let backup = false; if (res.diskGb !== null) { try { await dockerAsync("volume", "inspect", `${PREFIX}-${name}-data`); backup = true; } catch { /* none */ } }
-  return { name, model: a.model, models: MODELS, res, bounds: boundsNow(), presets: RES_PRESETS, preset: a.profile?.resources ?? "standard", usage, browser: a.profile?.tools.browser !== false, busy: (inflight.get(name)?.size ?? 0) > 0, legacyDisk: res.diskGb === null, backupVolume: backup ? `${PREFIX}-${name}-data` : null };
+  return { name, model: a.model, models: MODELS, res, bounds: boundsNow(), vm: { cpus: facts().cpus, memMb: facts().memMb, diskGb: facts().diskGb }, presets: RES_PRESETS, preset: a.profile?.resources ?? "standard", usage, browser: a.profile?.tools.browser !== false, busy: (inflight.get(name)?.size ?? 0) > 0, legacyDisk: res.diskGb === null, backupVolume: backup ? `${PREFIX}-${name}-data` : null };
 }
 class Conflict extends Error { info: unknown; constructor(msg: string, info: unknown) { super(msg); this.info = info; } }
 async function applyResources(name: string, b: any) {
@@ -306,11 +308,13 @@ for (const r of db.loadPending()) (pending.get(r.agent) ?? pending.set(r.agent, 
 const isExternal = (n: string) => agents[n]?.kind === "external";
 const isTmux = (n: string) => agents[n]?.kind === "tmux"; // existing Claude Code session on the host (container field holds the tmux session name)
 const online = (a: Agent) => !!a.lastSeen && Date.now() - Date.parse(a.lastSeen) < ONLINE_MS;
-const agentView = (a: Agent) => ({ name: a.name, model: a.model, kind: a.kind ?? "claude", profile: a.profile, ...(a.kind === "tmux" ? { online: tmuxBridge.sessionAlive(a.container), session: a.container, lastReply: a.lastReply ?? null } : {}), ...(a.kind === "external" ? { online: online(a), lastSeen: a.lastSeen ?? null, lastReply: a.lastReply ?? null, waiting: pending.get(a.name)?.size ?? 0 } : {}) });
+const agentView = (a: Agent) => ({ name: a.name, model: a.model, kind: a.kind ?? "claude", ...(a.canHire ? { canHire: true } : {}), profile: a.profile, ...(a.kind === "tmux" ? { online: tmuxBridge.sessionAlive(a.container), session: a.container, lastReply: a.lastReply ?? null } : {}), ...(a.kind === "external" ? { online: online(a), lastSeen: a.lastSeen ?? null, lastReply: a.lastReply ?? null, waiting: pending.get(a.name)?.size ?? 0 } : {}) });
 function touchExternal(name: string) { const a = agents[name]; if (!a) return; const was = online(a); a.lastSeen = new Date().toISOString(); db.putAgent(a); if (!was) emit({ type: "state" }); }
 const clearPending = (agent: string, conv: string) => { if (pending.get(agent)?.delete(conv)) { db.delPending(agent, conv); emit({ type: "state" }); } };
+// Messages an external or tmux agent is shown: everything but its own and system notes, except a reminder it booked for itself.
+const reachesAgent = (m: Msg, agent: string) => m.from !== agent && (m.from !== "system" || m.text.startsWith(`⏰ Reminder for ${agent}:`));
 function enqueueExternal(c: Conv, agent: string): string | null {
-  if (!c.messages.some((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent && m.from !== "system")) return null;
+  if (!c.messages.some((m) => m.seq > (c.cursor[agent] ?? 0) && reachesAgent(m, agent))) return null;
   if (!pending.get(agent)?.has(c.id)) { (pending.get(agent) ?? pending.set(agent, new Set()).get(agent)!).add(c.id); db.addPending(agent, c.id); emit({ type: "state" }); }
   return `(queued for ${agent}, an external agent. It replies in this conversation when it next checks in${online(agents[agent]) ? "" : "; it is offline right now"}.)`;
 }
@@ -319,7 +323,7 @@ function inboxFor(name: string) {
   const out: any[] = [];
   for (const id of [...(pending.get(name) ?? [])]) {
     const c = convs[id]; if (!c) { clearPending(name, id); continue; }
-    const cur = c.cursor[name] ?? 0, unseen = c.messages.filter((m) => m.seq > cur && m.from !== name && m.from !== "system");
+    const cur = c.cursor[name] ?? 0, unseen = c.messages.filter((m) => m.seq > cur && reachesAgent(m, name));
     if (!unseen.length) { clearPending(name, id); continue; }
     const reason = c.kind === "dm" ? "dm" : unseen.some((m) => new RegExp(`@${name}\\b`).test(m.text)) ? "mention" : "room"; // why it is here: direct message, @mention, or general room traffic
     out.push({ conversation: c.id, kind: c.kind, reason, title: c.title, ...(c.kind === "room" ? { members: c.members } : {}), upto: c.messages.at(-1)!.seq,
@@ -364,12 +368,12 @@ function createTmuxAgent(name: string, session: string) {
   agents[name] = { name, model: "host-tmux", container: session, port: 0, created: new Date().toISOString(), kind: "tmux" }; db.putAgent(agents[name]);
   const dm = ensureConv(`dm:${name}`, "dm", name, [name]);
   const tools = installHostTools(name, SECRET, AGENT_PORT);
-  post(dm, "system", `${name}'s orcie tools (remember, recall, read_room, send_message, promise, share_file, fetch_file, orcie-dm) are in ${tools.bin}; it uses its own agent token.`);
+  post(dm, "system", `${name}'s orcie tools (remember, recall, read_room, send_message, promise, remind_me, list_reminders, cancel_reminder, share_file, fetch_file, orcie-dm) are in ${tools.bin}; it uses its own agent token.`);
   post(dm, "system", `${name} is linked to the tmux session "${session}" on the host. Messages are typed into that session and its reply is read back from its Claude transcript when it finishes. It runs on the Mac as you, outside any container.`);
   emit({ type: "state" }); return agentView(agents[name]);
 }
 async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
-  const unseen = c.messages.filter((m) => m.seq > (c.cursor[agent] ?? 0) && m.from !== agent && m.from !== "system");
+  const unseen = c.messages.filter((m) => m.seq > (c.cursor[agent] ?? 0) && reachesAgent(m, agent));
   if (!unseen.length) return null;
   const upto = c.messages.at(-1)!.seq, hop = Math.max(...unseen.map((m) => m.hop ?? 0)) + 1;
   emit({ type: "typing", conv: c.id, agent, on: true });
@@ -382,6 +386,7 @@ async function deliverTmux(c: Conv, agent: string): Promise<string | null> {
     let text = fmtMsgs(unseen);
     if (c.kind === "room") text = `(Orcie chat room "${c.title}", members: user, ${c.members.join(", ")}. Reply as a normal chat message, or exactly NO_REPLY if you have nothing to add.)\n${text}`;
     else if (c.id.includes("+")) text += "\n\n(If this needs no response, reply exactly NO_REPLY.)";
+    const rn = reminderNote(agent, unseen); if (rn) text += `\n\n${rn}`;
     const reply = (await tmuxBridge.turn({ session: agents[agent].container, from: c.kind === "room" ? `room:${c.title}` : unseen.at(-1)!.from, text, conv: c.id, convFile: `${hostToolsDir(agent)}/conv`, onEvent })).trim();
     if (epochOf(agent) !== ep) return null; // stopped by the user
     c.cursor[agent] = upto; db.setCursor(c.id, agent, upto);
@@ -429,6 +434,7 @@ async function deliverInner(c: Conv, agent: string): Promise<string | null> {
           : `While you were drafting, new messages arrived:\n${text}\n\nYour unposted draft was:\n${draft}\n\nTaking everything now said into account, reply with your final message (revise your draft, or drop whatever has already been covered), or reply exactly NO_REPLY if it is now redundant.`;
       }
       if (note) text += `\n\n${note}`;
+      const rn = reminderNote(agent, unseen); if (rn) text += `\n\n${rn}`;
       const open = db.listPromises(agent, "active").reverse(), cutoff = new Date().toISOString();
       const n = [notes.read(agent), open.length ? `Your open promises (commitments you made; close them with: promise done <id>):\n${open.map((p: any) => `#${p.id} ${p.text}`).join("\n")}` : ""].filter(Boolean).join("\n\n");
       const mem = memoryBlock({ agent, conv: c, incoming: unseen.map((m) => m.text).join("\n"), notes: n, journal, state: db.memGet(agent, c.id) });
@@ -441,7 +447,7 @@ async function deliverInner(c: Conv, agent: string): Promise<string | null> {
       if (c.kind === "room" && pass === 0 && reply && !isSilent(reply) && arrived) { draft = reply; continue; } // hold and reconsider
       const worked = items.some((i) => i.name !== "say");
       if (items.at(-1)?.name === "say" && items.at(-1)!.input.trim() === reply.trim()) items.pop(); // the final answer is the message itself, not work log
-      if (reply && !isSilent(reply) && !(c.kind === "room" && !worked && isAck(reply))) route(c, post(c, agent, reply, items, hop));
+      if (reply && !isSilent(reply) && !(c.kind === "room" && !worked && isAck(reply))) { route(c, post(c, agent, reply, items, hop)); autoFollowUp(c, agent, reply); }
       break;
     }
     return reply;
@@ -592,6 +598,14 @@ const uiServer = createServer(async (req, res) => {
     }
     if (req.method === "POST" && url === "/api/rooms") { const r = makeRoom(b.title, b.members, b.mode); return r.conv ? json(201, view(r.conv)) : json(r.code, { error: r.error }); }
     if (req.method === "POST" && url === "/api/starter-hr") { try { return json(200, await ensureStarterHr(b.force === true)); } catch (e) { return json(500, { error: String((e as Error).message ?? e).split("\n")[0].slice(0, 300) }); } }
+    if ((m = url.match(/^\/api\/rooms\/([^/]+)$/)) && req.method === "DELETE") { // delete a room and its history; the title must be repeated as confirmation
+      const c = convs[decodeURIComponent(m[1])]; if (!c || c.kind !== "room") return json(404, { error: "no such room" });
+      if (new URL(req.url!, "http://x").searchParams.get("confirm") !== c.title) return json(400, { error: `confirmation required: repeat the room's title (?confirm=${c.title})` });
+      if ([...inflight.values()].some((set) => set.has(c.id))) return json(409, { error: "agents are replying in this room right now; stop them or wait, then try again" });
+      db.delConv(c.id); delete convs[c.id]; for (const k of [...dirty]) if (k.startsWith(`${c.id}|`)) dirty.delete(k);
+      for (const set of pending.values()) set.delete(c.id);
+      journal.rebuild(Object.values(convs)); emit({ type: "state" }); return json(200, { deleted: c.id, title: c.title, messages: c.messages.length });
+    }
     if ((m = url.match(/^\/api\/rooms\/([^/]+)\/mode$/)) && req.method === "POST") {
       const c = convs[decodeURIComponent(m[1])]; if (!c || c.kind !== "room") return json(404, { error: "not found" });
       c.mode = b.mode === "sequential" ? "sequential" : "parallel"; db.putConv(c); emit({ type: "state" }); return json(200, view(c));
@@ -630,6 +644,8 @@ const uiServer = createServer(async (req, res) => {
       res.writeHead(200, { "content-type": inline ? f.type : "application/octet-stream", "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.name)}`, "x-content-type-options": "nosniff", "content-security-policy": "sandbox", "cache-control": "private, max-age=3600" });
       return void res.end(readFileSync(`${FILES_DIR}/${f.id}`));
     }
+    if (req.method === "GET" && url === "/api/reminders") { const q = new URL(req.url!, "http://x").searchParams; return json(200, { reminders: db.listReminders(q.get("agent") ?? undefined, q.get("status") ?? undefined) }); }
+    if ((m = url.match(/^\/api\/reminders\/(\d+)$/)) && req.method === "DELETE") { const r = db.getReminder(Number(m[1])); if (!r || r.status !== "pending") return json(404, { error: "no pending reminder with that id" }); db.setReminder(r.id, "cancelled"); emit({ type: "reminders", agent: r.agent }); return json(200, { ok: true }); }
     if (req.method === "GET" && url === "/api/promises") { const q = new URL(req.url!, "http://x").searchParams; return json(200, { promises: db.listPromises(q.get("agent") ?? undefined, q.get("status") ?? undefined) }); }
     if ((m = url.match(/^\/api\/promises\/(\d+)$/)) && req.method === "POST") { // the human can close or reopen an agent's commitment
       const p = db.getPromise(Number(m[1])); if (!p) return json(404, { error: "no such promise" });
@@ -640,6 +656,14 @@ const uiServer = createServer(async (req, res) => {
     if (req.method === "GET" && url === "/api/activity") return json(200, { busy: [...inflight].filter(([, v]) => v.size).map(([agent, v]) => ({ agent, conversations: [...v] })) });
     if (req.method === "GET" && url === "/api/stats") return json(200, await fleetStats());
     if (req.method === "GET" && url === "/api/check") { const only = new URL(req.url!, "http://x").searchParams.get("agent"); return json(200, { agents: await Promise.all(Object.values(agents).filter((a) => a.kind !== "external" && a.kind !== "tmux" && (!only || a.name === only)).map((a) => checkAgent(a))) }); }
+    if ((m = url.match(/^\/api\/agents\/([^/]+)\/apps(?:\/([a-z]+))?$/)) && agents[m[1]]) { // connectors: WeChat, LINE
+      const a = agents[m[1]];
+      if (a.kind === "external" || a.kind === "tmux") return json(400, { error: "apps run inside container agents only" });
+      try {
+        if (req.method === "GET" && !m[2]) return json(200, { apps: await Promise.all(APPS.map((d) => appState(a, d.id))), browser: a.profile?.tools?.browser !== false });
+        if (req.method === "POST" && m[2]) return json(202, await appAction(a, m[2], String(b.action ?? "")));
+      } catch (e) { return json(400, { error: String((e as Error).message ?? e) }); }
+    }
     if ((m = url.match(/^\/api\/agents\/([^/]+)\/resources$/)) && agents[m[1]] && (req.method === "GET" || req.method === "POST")) {
       try { return json(200, req.method === "GET" ? await resourceInfo(m[1]) : await applyResources(m[1], b)); } catch (e) { return e instanceof Conflict ? json(409, { error: e.message, ...(e.info as object) }) : json(400, { error: String((e as Error).message ?? e) }); }
     }
@@ -665,6 +689,7 @@ const uiServer = createServer(async (req, res) => {
     if ((m = url.match(/^\/agents\/([^/]+)\/log$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/log"));
     if ((m = url.match(/^\/agents\/([^/]+)\/health$/)) && agents[m[1]]) return json(200, await harness(agents[m[1]], "/healthz"));
     if (req.method === "DELETE" && (m = url.match(/^\/(?:api\/)?agents\/([^/]+)$/)) && agents[m[1]]) { // lay off: needs the agent's name as confirmation
+      if (agents[m[1]].canHire) return json(403, { error: "the HR agent is the platform's default agent and cannot be laid off" });
       if (new URL(req.url!, "http://x").searchParams.get("confirm") !== m[1]) return json(400, { error: `confirmation required: repeat the agent's name (?confirm=${m[1]})` });
       try { return json(200, await removeAgent(m[1], { archive: new URL(req.url!, "http://x").searchParams.get("archive") === "1" })); } catch (e) { return json(500, { error: String((e as Error).message ?? e) }); }
     }
@@ -722,6 +747,68 @@ const mine = (who: string) => Object.values(convs).filter((c) => participants(c)
 function findConv(who: string, ref: string) {
   const r = ref.trim().replace(/^#/, "").toLowerCase();
   return mine(who).find((c) => c.id.toLowerCase() === ref.trim().toLowerCase() || (c.kind === "room" && c.title.toLowerCase() === r) || convLabel(c, who).toLowerCase() === ref.trim().toLowerCase());
+}
+// ---- reminders ----
+// remind_me(when, note) books a follow-up. The portal says so in the conversation where it was booked, and when it is due it posts
+// "Reminder for <agent>" there and wakes the agent with its own note. Reminders live in SQLite, so they survive a restart; one that came
+// due while the portal was down fires as soon as it starts again. An agent that ends a turn saying work is still running, without
+// having booked one, gets an automatic 15 minute reminder.
+const MAX_PENDING_REMINDERS = 50;
+function reminderConv(who: string, origin?: string): Conv | null { return (origin && convs[origin] && participants(convs[origin]).includes(who) ? convs[origin] : null) ?? convs[`dm:${who}`] ?? null; }
+function bookReminder(who: string, when: unknown, noteIn: string, origin?: string, auto = false): string {
+  const note = noteIn.trim().slice(0, 1000); if (!note) throw new Error("note is required: say what to do when it is due");
+  if (db.listReminders(who, "pending").length >= MAX_PENDING_REMINDERS) throw new Error(`you already have ${MAX_PENDING_REMINDERS} pending reminders; cancel some first`);
+  const due = auto ? new Date(Date.now() + AUTO_MS) : parseWhen(when), c = reminderConv(who, origin);
+  const id = db.addReminder(who, c?.id ?? null, note, due.toISOString(), auto);
+  if (c) post(c, "system", `⏰ ${who} ${auto ? "automatically booked" : "booked"} a follow-up for ${fmtUtc(due)}: ${note}`);
+  emit({ type: "reminders", agent: who });
+  return `reminder #${id} booked for ${fmtUtc(due)} (${due.toISOString()})${c ? ` in ${convLabel(c, who)}` : ""}`;
+}
+function fireReminders() {
+  for (const r of db.dueReminders(new Date().toISOString())) {
+    db.setReminder(r.id, "fired");
+    const a = agents[r.agent]; if (!a) continue; // laid off meanwhile
+    const c = (r.conv && convs[r.conv]) || convs[`dm:${r.agent}`]; if (!c) continue;
+    post(c, "system", `⏰ Reminder for ${r.agent}: ${r.note}`); emit({ type: "reminders", agent: r.agent });
+    kick(c, r.agent);
+  }
+}
+const reminderNote = (agent: string, unseen: Msg[]) => unseen.some((m) => m.from === "system" && m.text.startsWith(`⏰ Reminder for ${agent}:`))
+  ? `(This is a reminder you booked for yourself, and the note above says what to do. Check on it, carry on with the work, and report back here. If something is still running, book another with: remind_me <delay> "<note>". If there is truly nothing to add, reply exactly NO_REPLY.)` : "";
+function autoFollowUp(c: Conv, agent: string, reply: string) {
+  try {
+    if (!wantsFollowUp(reply) || db.listReminders(agent, "pending").some((r: any) => r.conv === c.id)) return; // no promise of work, or it already booked one here
+    bookReminder(agent, null, `You said work was still running. Check on it and report back. You said: ${reply.replace(/\s+/g, " ").slice(0, 300)}`, c.id, true);
+  } catch (e) { console.error(`auto follow-up for ${agent}: ${e}`); }
+}
+// ---- apps (connectors) ----
+const appJobs = new Map<string, { state: "working" | "failed"; action: string; message: string }>(); // `${agent}/${app}`
+const dexec = (container: string, cmd: string, timeout = 30_000, stdin?: string) => new Promise<{ ok: boolean; out: string }>((resolve) => {
+  const p = execFile("docker", ["exec", ...(stdin !== undefined ? ["-i"] : []), container, "sh", "-c", cmd], { encoding: "utf8", timeout, maxBuffer: 1 << 20 }, (e, out, err) => resolve({ ok: !e, out: `${out}${err}`.trim().slice(-600) }));
+  if (stdin !== undefined) p.stdin?.end(stdin);
+});
+async function appState(a: Agent, id: string) {
+  const d = appById(id)!, job = appJobs.get(`${a.name}/${id}`);
+  const installed = (await dexec(a.container, d.installedTest, 8000)).ok, running = d.runningTest ? (await dexec(a.container, d.runningTest, 8000)).ok : null;
+  return { id: d.id, label: d.label, blurb: d.blurb, actions: d.actions, experimental: d.experimental ?? null, installed, running, job: job ?? null };
+}
+async function appAction(a: Agent, id: string, action: string) {
+  const d = appById(id); if (!d) throw new Error("unknown app");
+  if (!d.actions.includes(action)) throw new Error(`${d.label} has no action "${action}"`);
+  if (a.profile?.tools?.browser === false) throw new Error("this agent has its browser (and live display) turned off; turn it on in Edit profile first");
+  const key = `${a.name}/${id}`; if (appJobs.get(key)?.state === "working") throw new Error(`${d.label} is busy: ${appJobs.get(key)!.action}`);
+  appJobs.set(key, { state: "working", action, message: `${action}...` });
+  (async () => {
+    try {
+      if (action === "install") {
+        const r = await dexec(a.container, `${d.tool} install`, 15 * 60_000); if (!r.ok) throw new Error(r.out || "install failed");
+        const w = await dexec(a.container, `grep -q "${d.rules.split("\n")[0]}" /data/workspace/CLAUDE.md 2>/dev/null || cat >> /data/workspace/CLAUDE.md`, 15_000, `\n${d.rules}\n`); if (!w.ok) throw new Error(w.out);
+      } else { const r = await dexec(a.container, `${d.tool} ${action}`, 120_000); if (!r.ok) throw new Error(r.out || `${action} failed`); }
+      appJobs.delete(key);
+    } catch (e) { appJobs.set(key, { state: "failed", action, message: String((e as Error).message ?? e).slice(0, 300) }); }
+    emit({ type: "apps", agent: a.name });
+  })();
+  return { started: action };
 }
 // ---- starter HR agent ----
 // `orcie setup` creates one agent, "hr", that helps the user hire and configure the rest of the team. It gets exactly two extra powers, through
@@ -814,6 +901,9 @@ async function agentExtra(who: string, method: string, url: string, b: any, orig
     const id = db.addPromise(who, t, origin && convs[origin] && participants(convs[origin]).includes(who) ? origin : null, b.note ? String(b.note).slice(0, 500) : null); emit({ type: "promises", agent: who }); return { code: 200, body: { text: `promise #${id} recorded` } }; }
   if (url === "/promises/list") { const st = b.status ? String(b.status) : "active"; const rows = db.listPromises(who, st === "all" ? undefined : st);
     return { code: 200, body: { text: rows.length ? rows.map((p: any) => `#${p.id} [${p.status}] ${p.text}${p.conv ? ` (from ${p.conv})` : ""}${p.note ? ` - ${p.note}` : ""}`).join("\n") : "(no promises)" } }; }
+  if (url === "/reminders/add") { try { return { code: 200, body: { text: bookReminder(who, b.when, String(b.note ?? ""), origin) } }; } catch (e) { return { code: 400, body: { error: String((e as Error).message) } }; } }
+  if (url === "/reminders/list") { const rows = db.listReminders(who, "pending"); return { code: 200, body: { text: rows.length ? rows.map((r: any) => `#${r.id} ${fmtUtc(r.due)}${r.auto ? " (automatic)" : ""}${r.conv ? ` in ${convs[r.conv] ? convLabel(convs[r.conv], who) : r.conv}` : ""}: ${r.note}`).join("\n") : "(no pending reminders)" } }; }
+  if (url === "/reminders/cancel") { const r = db.getReminder(Number(b.id)); if (!r || r.agent !== who || r.status !== "pending") return { code: 404, body: { error: "no pending reminder of yours with that id" } }; db.setReminder(r.id, "cancelled"); emit({ type: "reminders", agent: who }); return { code: 200, body: { text: `reminder #${r.id} cancelled` } }; }
   if (url === "/promises/update") { const p = db.getPromise(Number(b.id)); if (!p || p.agent !== who) return { code: 404, body: { error: "no such promise of yours" } };
     if (!["active", "done", "cancelled"].includes(b.status)) return { code: 400, body: { error: "status must be active, done or cancelled" } };
     db.setPromise(p.id, b.status, b.note ? String(b.note).slice(0, 500) : null); emit({ type: "promises", agent: who }); return { code: 200, body: { text: `promise #${p.id} marked ${b.status}` } }; }
@@ -868,7 +958,7 @@ async function checkAgent(a: Agent) {
   try { await dockerAsync("inspect", "-f", "{{.State.Running}}", a.container); } catch { add("container", false, "not running"); return { agent: a.name, ok: false, checks }; }
   add("container", true, "running");
   try { const img = await dockerAsync("inspect", "-f", "{{.Image}}", a.container), cur = await dockerAsync("image", "inspect", "-f", "{{.Id}}", IMAGE); add("image", img === cur, img === cur ? "current" : "outdated: run `orcie recreate " + a.name + "`"); } catch (e) { add("image", false, String(e).slice(0, 80)); }
-  const tools = ["claude", "node", "git", "gh", "playwright-mcp", "xdotool", "Xvfb", "x11vnc", "import", "remember", "recall", "read_room", "send_message", "promise", "share_file", "fetch_file", "browser_help", "hire", "orcie-dm"];
+  const tools = ["claude", "node", "git", "gh", "playwright-mcp", "xdotool", "Xvfb", "x11vnc", "import", "remember", "recall", "read_room", "send_message", "promise", "remind_me", "list_reminders", "cancel_reminder", "share_file", "fetch_file", "browser_help", "hire", "orcie-dm"];
   try { const out = await sh(`for t in ${tools.join(" ")}; do command -v $t >/dev/null || echo $t; done`); add("tools", !out, out ? `missing: ${out.split("\n").join(", ")}` : `${tools.length} present`); } catch (e) { add("tools", false, String(e).slice(0, 80)); }
   try { const out = await sh('if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then echo token; elif [ -f "$HOME/.claude/.credentials.json" ]; then echo login-copy; else echo none; fi; claude --version 2>&1 | head -1'); const [mode, ver] = out.split("\n"); add("auth", mode !== "none", `${mode} (claude ${ver})`); } catch (e) { add("auth", false, String(e).slice(0, 80)); }
   try { const st = await (await hbrowser(a, "/browser/state", "GET", undefined, 8000)).json() as any; if (st.control?.enabled === false) add("browser", true, "disabled by this agent's profile"); else add("browser", !!st.running, st.running ? `running (${st.url ?? "blank"})` : "not running"); } catch { add("browser", false, "harness unreachable"); }
@@ -920,4 +1010,5 @@ async function pollBrowserSessions() {
     }));
   } finally { bBusy = false; }
 }
+fireReminders(); setInterval(() => { try { fireReminders(); } catch (e) { console.error(`reminders: ${e}`); } }, 10_000).unref();
 setInterval(() => { pollBrowserSessions().catch(() => {}); }, 2000).unref();

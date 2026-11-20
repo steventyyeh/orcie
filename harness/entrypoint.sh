@@ -56,6 +56,13 @@ grep -q "orcie-promises" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLA
 ## Promises
 When you commit to doing something for someone, record it: `promise add "<what you promised>"`. Your open promises are shown to you in every conversation. When you have delivered, run `promise done <id>` (or `promise cancel <id>` if it no longer applies). `promise list [all]` shows them.
 EOM
+# Reminders (appended once).
+grep -q "orcie-reminders" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.md <<'EOM'
+
+<!-- orcie-reminders -->
+## Reminders
+To follow up on something later (a build that is still running, a reply you are waiting for, a check you promised), book a reminder instead of relying on a session timer: `remind_me <when> "<what to do>"`. `when` is a delay like `20m`, `2h`, `1d`, or a UTC time like `2026-11-17T14:10Z`, from 1 minute to 14 days ahead. The portal posts a notice in the current conversation, saves the reminder (it survives restarts), and when it is due wakes you in that same conversation with your note: then check, carry on with the work, and report back (or reply NO_REPLY if there is nothing to add). `list_reminders` shows your pending reminders; `cancel_reminder <id>` removes one. Do not use your own session timers or cron for this: the user cannot see them and they die when you restart. If you end a turn saying work is still running without booking a reminder, the portal books a 15-minute one for you.
+EOM
 # Live browser (appended once).
 grep -q "orcie-browser" /data/workspace/CLAUDE.md || cat >> /data/workspace/CLAUDE.md <<'EOM'
 

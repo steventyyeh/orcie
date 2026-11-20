@@ -1,0 +1,43 @@
+#!/bin/bash
+# LINE has no Linux desktop app, so this uses LINE's official Chrome extension inside the agent's own live browser (Chromium on :99, the one the user
+# can watch and take over). The extension is installed into THIS agent's volume (/data/browser-extensions/line), not into the shared image.
+#   line-app install | open | shot [file]
+# READ ONLY is a rule for the agent, not something this script can enforce: never type into a chat box and never press send.
+EXT=/data/browser-extensions/line; CDP=http://127.0.0.1:9222; export DISPLAY=:99
+# The extension's id comes from its signing key. Unpacked, the id would differ and LINE's secure module refuses to start ("ltsm_not_available", the page spins forever),
+# so the original key is put back into manifest.json: the id is then the real one (ophjlpahpchlmihnnnihgmmeilfjmjjc).
+setkey() { node - "$1" "$2" <<'JS'
+const fs=require("fs"),crypto=require("crypto"); const b=fs.readFileSync(process.argv[2]),mp=process.argv[3];
+if(b.toString("latin1",0,4)!=="Cr24"||b.readUInt32LE(4)!==3) throw new Error("not a CRX3");
+const hl=b.readUInt32LE(8), h=b.subarray(12,12+hl); let o=0;
+const varint=(v,st)=>{let r=0,s=0,x;do{x=v[st.p++];r+=(x&127)*2**s;s+=7}while(x&128);return r};
+const st={p:0}; const keys=[]; let crxId=null;
+while(st.p<h.length){const tag=varint(h,st),f=tag>>3,t=tag&7; if(t!==2){ if(t===0)varint(h,st); else throw new Error("wire "+t); continue }
+  const len=varint(h,st),v=h.subarray(st.p,st.p+len);st.p+=len;
+  if(f===2||f===3){ const q={p:0}; while(q.p<v.length){const tg=varint(v,q),ff=tg>>3; const l=varint(v,q);const d=v.subarray(q.p,q.p+l);q.p+=l; if(ff===1)keys.push(d)} }
+  if(f===10000){ crxId=v.subarray(2,2+v[1]) } }
+const k=keys.find(k=>crypto.createHash("sha256").update(k).digest().subarray(0,16).equals(crxId)); if(!k) throw new Error("no key matches the extension id");
+const m=JSON.parse(fs.readFileSync(mp,"utf8")); m.key=k.toString("base64"); fs.writeFileSync(mp,JSON.stringify(m));
+JS
+}
+extid() { curl -s -m 5 "$CDP/json/list" | grep -o 'chrome-extension://[a-p]\{32\}/background.js' | head -1 | sed 's#chrome-extension://##; s#/background.js##'; }
+case "$1" in
+  install)
+    [ -f "$EXT/manifest.json" ] && { echo "already installed: $EXT"; exit 0; }
+    t=$(mktemp -d) && curl -fsSL --retry 3 -o "$t/line.crx" "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0&acceptformat=crx2,crx3&x=id%3Dophjlpahpchlmihnnnihgmmeilfjmjjc%26uc" || { echo "download failed" >&2; exit 1; }
+    mkdir -p "$EXT" && unzip -q -o "$t/line.crx" -d "$EXT" 2>/dev/null   # a .crx has a small header before the zip: unzip warns (exit 1) but extracts
+    [ -f "$EXT/manifest.json" ] && { setkey "$t/line.crx" "$EXT/manifest.json" || { echo "could not restore the extension key" >&2; rm -rf "$t"; exit 1; }; }
+    rm -rf "$t"
+    [ -f "$EXT/manifest.json" ] && echo "installed: $EXT (the browser loads it when it restarts; line-app open does that)" || { echo "install failed" >&2; exit 1; } ;;
+  open)
+    [ -e /tmp/.X11-unix/X99 ] || { echo "the live display is not running (the browser tool must be on for this agent)" >&2; exit 1; }
+    "$0" install >/dev/null || exit 1
+    id=$(extid)
+    if [ -z "$id" ]; then # Chromium was started before the extension was installed: restart it (it is supervised and comes back with the extension)
+      pkill -f "remote-debugging-port=9222"; for i in $(seq 1 30); do sleep 1; id=$(extid); [ -n "$id" ] && break; done
+    fi
+    [ -n "$id" ] || { echo "the extension did not load" >&2; exit 1; }
+    curl -s -m 10 -X PUT "$CDP/json/new?chrome-extension://$id/index.html" >/dev/null && echo "LINE is open in the live browser (tab 'LINE'); look with: line-app shot" ;;
+  shot) out="${2:-/data/workspace/line-shot.png}"; mkdir -p "$(dirname "$out")"; import -window root "$out" && echo "$out" ;;
+  *) echo "usage: line-app install | open | shot [file]" >&2; exit 1 ;;
+esac

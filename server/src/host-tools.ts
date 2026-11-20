@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { ORCIE_DIR } from "./env.ts";
 import { agentToken } from "./guard.ts";
 
-export const TOOLS = ["remember", "recall", "read_room", "send_message", "promise", "share_file", "fetch_file", "orcie-dm"];
+export const TOOLS = ["remember", "recall", "read_room", "send_message", "promise", "remind_me", "list_reminders", "cancel_reminder", "share_file", "fetch_file", "orcie-dm"];
 export const hostToolsDir = (agent: string) => `${ORCIE_DIR}/hosttools/${agent}`;
 const REPO = resolve(import.meta.dirname, "../..");
 

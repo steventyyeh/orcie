@@ -20,10 +20,10 @@ It prints its plan, puts orcie in `~/orcie` (override with `ORCIE_HOME`), then r
 |---|---|
 | `orcie status` | colima, server and every agent's health (exit 1 if something is down) |
 | `orcie up` / `orcie down` | start / stop colima's containers and the server (down keeps colima and all data) |
-| `orcie restart [--force]` | whole stack: wait for idle agents, stop, start (also after a reboot). `orcie restart <agent>` / `--all` restarts agent processes only |
+| `orcie restart [--server] [--force]` | whole stack (`--server`: only the server process, agents keep running): wait for idle agents, stop, start (also after a reboot). `orcie restart <agent>` / `--all` restarts agent processes only |
 | `orcie logs [-f]` / `orcie logs <agent>` | server log / one agent's container log |
 | `orcie autostart on\|off` | start the stack at login (launchd) |
-| `orcie setup --hr` | bring the HR agent back after you laid it off on purpose |
+| `orcie setup --hr` | recreate the HR agent if it is ever missing (it cannot be laid off from the UI or API) |
 
 The HR agent can create agents and rooms (the `hire` tool) and nothing else: it cannot lay off or change agents, and its container gets no GitHub credential. Settings live in `~/.orcie/env` (ports, database). A second, isolated stack (trial or tests) uses its own `ORCIE_DIR`, `ORCIE_PREFIX`, `PORT`, `ORCIE_AGENT_PORT`, `ORCIE_API_PORT`; its containers are named `<prefix>-<agent>`.
 

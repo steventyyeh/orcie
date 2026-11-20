@@ -1,0 +1,26 @@
+#!/bin/bash
+# WeChat (Weixin) for Linux, installed into THIS agent's own data volume (not in the shared image) and shown on the agent's live display
+# (:99, the same one the user watches in the live browser panel). Used by an agent that was given the job of reading WeChat.
+#   wechat-app install | start | stop | status | shot [file]
+# The app is driven through the display only (screenshots to look, xdotool to move around). READ ONLY is a rule for the agent, not something
+# this script can enforce: never type into a chat box and never press send.
+ROOT=/data/apps/wechat; BIN="$ROOT/opt/wechat/wechat"; export DISPLAY=:99
+case "$1" in
+  install)
+    [ -x "$BIN" ] && { echo "already installed: $BIN"; exit 0; }
+    case "$(dpkg --print-architecture)" in arm64) f=WeChatLinux_arm64.deb ;; amd64) f=WeChatLinux_x86_64.deb ;; *) echo "unsupported CPU architecture" >&2; exit 1 ;; esac
+    mkdir -p "$ROOT" /data/apps && curl -fsSL --retry 3 -o /data/apps/wechat.deb "https://dldir1.qq.com/weixin/Universal/Linux/$f" || { echo "download failed" >&2; exit 1; }
+    dpkg-deb -x /data/apps/wechat.deb "$ROOT" && rm -f /data/apps/wechat.deb && echo "installed: $BIN" ;;
+  start)
+    [ -x "$BIN" ] || { echo "not installed: run wechat-app install" >&2; exit 1; }
+    [ -e /tmp/.X11-unix/X99 ] || { echo "the live display is not running (the browser tool must be on for this agent)" >&2; exit 1; }
+    pgrep -f "$ROOT/opt/wechat" >/dev/null && { echo "already running"; exit 0; }
+    mkdir -p /tmp/xdg-wechat && chmod 700 /tmp/xdg-wechat
+    XDG_RUNTIME_DIR=/tmp/xdg-wechat nohup dbus-run-session -- "$BIN" --no-sandbox >/tmp/wechat.log 2>&1 &
+    for i in $(seq 1 30); do sleep 1; xdotool search --name Weixin >/dev/null 2>&1 && { echo "running; look with: wechat-app shot"; exit 0; }; done
+    echo "started, but no window yet; try: wechat-app shot" ;;
+  stop) pkill -f "$ROOT/opt/wechat" && echo stopped || echo "not running" ;;
+  status) pgrep -f "$ROOT/opt/wechat" >/dev/null && echo running || echo "not running"; [ -x "$BIN" ] && echo "installed" || echo "not installed" ;;
+  shot) out="${2:-/data/workspace/wechat-shot.png}"; mkdir -p "$(dirname "$out")"; import -window root "$out" && echo "$out" ;;
+  *) echo "usage: wechat-app install | start | stop | status | shot [file]" >&2; exit 1 ;;
+esac
