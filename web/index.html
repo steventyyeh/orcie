@@ -640,7 +640,7 @@ function drawLive() {
   for (const a of Object.keys(typing[cur] || {}).filter((a) => typing[cur][a])) {
     const items = live[cur]?.[a] || [], last = items.at(-1), running = last && last.result === undefined;
     const d = document.createElement("details"); d.className = "lv"; d.dataset.a = a; d.open = open[a] ?? false;
-    d.innerHTML = `<summary><span class="livedot"></span><b>${esc(a)}</b><span class="st">${running ? `Running ${esc(shortTool(last.name))} <code>${esc(last.input.replace(/\s+/g, " ").slice(0, 80))}</code>` : "Thinking"}</span>${items.length ? `<span class="cnt">${items.length} tool call${items.length > 1 ? "s" : ""}</span>` : ""}${ic("caret", "chev")}</summary>`;
+    d.innerHTML = `<summary><span class="livedot"></span><b>${esc(a)}</b><span class="st">${running ? `Running ${esc(shortTool(last.name))} <code>${esc(last.input.replace(/\s+/g, " ").slice(0, 80))}</code>` : "Thinking"}</span>${items.length ? `<span class="cnt">${items.length} tool call${items.length > 1 ? "s" : ""}</span>` : ""}<button class="btn sm stop lvstop" data-stop="${esc(a)}" title="Stop ${esc(a)}: cancel the current turn and clear its queue">Stop</button>${ic("caret", "chev")}</summary>`;
     if (items.length) { const p = document.createElement("div"); p.className = "panel"; items.forEach((it) => p.append(toolEl(it))); d.append(p); p.scrollTop = p.scrollHeight; }
     box.append(d);
   }
