@@ -180,6 +180,8 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 .m.first{margin-top:var(--s3);padding-top:var(--s1)}
 .m .gut{width:36px;flex-shrink:0;font-size:11px;color:var(--faint);text-align:right;padding-top:5px;visibility:hidden}.m:hover .gut{visibility:visible}
 .m .main{min-width:0;flex:1}
+.m .cp{position:absolute;top:2px;right:var(--gutter);display:none;gap:4px}.m:hover .cp{display:flex}
+.m .cp button{font:12px/1 inherit;padding:4px 8px;border:1px solid var(--line);background:var(--bg);color:var(--mute);border-radius:var(--r1);cursor:pointer}.m .cp button:hover{color:var(--fg)}
 .m .who{font-weight:700;margin-right:var(--s2);color:hsl(var(--h,220) 62% var(--name-l))}.m .when{font-size:12px;color:var(--mute)}
 .body{overflow-wrap:anywhere}
 .body p{margin:0}.body p+p,.body ul+p,.body p+ul,.body ol+p,.body p+ol,.body pre+p,.body p+pre{margin-top:var(--s2)}
@@ -566,11 +568,25 @@ function msgNode(m, prev, newFrom) {
   if (m.from === "system") { const x = document.createElement("div"); x.className = "sys"; x.dataset.seq = m.seq; x.textContent = m.text; f.append(x); return f; }
   const grouped = prev && prev.from === m.from && new Date(prev.at).toDateString() === d.toDateString() && d - new Date(prev.at) < 5 * 60e3 && newFrom !== m.seq;
   const x = document.createElement("div"); x.dataset.seq = m.seq; x.style.setProperty("--h", hue(m.from)); x.className = "m" + (grouped ? "" : " first") + (m.text.startsWith("failed") ? " err" : "");
-  x.innerHTML = (grouped ? `<div class="gut">${hm(d)}</div>` : av(m.from, "md")) + `<div class="main">${grouped ? "" : `<div><span class="who">${esc(label(m.from))}</span><span class="when">${hm(d)}</span></div>`}<div class="body">${md(m.text)}</div></div>`;
+  x.innerHTML = (grouped ? `<div class="gut">${hm(d)}</div>` : av(m.from, "md")) + `<div class="main">${grouped ? "" : `<div><span class="who">${esc(label(m.from))}</span><span class="when">${hm(d)}</span></div>`}<div class="body">${md(m.text)}</div></div><div class="cp"><button data-cp="plain" title="Copy as plain text (no formatting)">Copy text</button><button data-cp="md" title="Copy the original Markdown">Markdown</button></div>`;
   if (m.files?.length) x.querySelector(".main").append(filesEl(m.files));
   if (m.activity?.length) x.querySelector(".main").append(actEl(m.activity, `${ic("tool")}<span>${m.activity.filter((i) => i.name !== "say").length ? `${m.activity.filter((i) => i.name !== "say").length} tool call${m.activity.filter((i) => i.name !== "say").length > 1 ? "s" : ""}` : "Work log"}</span>${ic("caret", "chev")}`, false));
   f.append(x); return f;
 }
+// ---- copying: always plain text, never the dark/colored rich HTML ----
+function plainText(src) {
+  return src.replace(/```[a-z]*\n?([\s\S]*?)```/g, (_, c) => c.replace(/\n$/, "")).split("\n").map((l) => {
+    if (/^\s*\|?[\s:|-]{3,}\|?\s*$/.test(l) && l.includes("-")) return null; // table rule row
+    if (/^\s*\|.*\|\s*$/.test(l)) return l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()).join("\t");
+    return l.replace(/^\s{0,3}#{1,6}\s+/, "").replace(/^(\s*)[-*]\s+/, "$1- ").replace(/^>\s?/, "");
+  }).filter((l) => l !== null).join("\n").replace(/\*\*([^*\n]+)\*\*/g, "$1").replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1$2").replace(/`([^`\n]+)`/g, "$1");
+}
+async function copyText(t) { try { await navigator.clipboard.writeText(t); toast("Copied"); } catch { const a = document.createElement("textarea"); a.value = t; document.body.append(a); a.select(); document.execCommand("copy"); a.remove(); toast("Copied"); } }
+document.addEventListener("click", (e) => { const b = e.target.closest("[data-cp]"); if (!b) return; const m = conv?.messages.find((x) => String(x.seq) === b.closest(".m")?.dataset.seq); if (m) copyText(b.dataset.cp === "md" ? m.text : plainText(m.text)); });
+document.addEventListener("copy", (e) => { // selecting text in a message and pressing Cmd/Ctrl+C gives plain text only
+  const sel = getSelection(); if (!sel || sel.isCollapsed || !sel.anchorNode?.parentElement?.closest(".sc, #scroller")) return;
+  e.clipboardData.setData("text/plain", sel.toString()); e.preventDefault();
+});
 function toolEl(it) {
   if (it.name === "say") { const t = document.createElement("div"); t.className = "tool say"; t.textContent = it.input; return t; } // narration before the answer
   const t = document.createElement("div"); t.className = "tool" + (it.result === undefined ? " run" : "");
