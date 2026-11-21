@@ -44,6 +44,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .btn.p{background:var(--accent);border-color:var(--accent);color:#fff}.btn.p:hover{filter:brightness(.92)}
 .btn.sm{height:30px;padding:0 var(--s3);font-size:13px}
 .tool.say{font-style:italic;color:var(--faint);white-space:pre-wrap}
+.lvstop{margin-left:auto;margin-right:var(--s2)}
 .btn.stop{border-color:var(--danger,#c0392b);color:var(--danger,#c0392b)}
 .hsel{flex:0 0 auto;width:auto;max-width:150px;height:30px;border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--bg);color:var(--fg);font-size:13px;padding:0 var(--s2)}
 
@@ -583,7 +584,7 @@ function plainText(src) {
   }).filter((l) => l !== null).join("\n").replace(/\*\*([^*\n]+)\*\*/g, "$1").replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1$2").replace(/`([^`\n]+)`/g, "$1");
 }
 async function copyText(t) { try { await navigator.clipboard.writeText(t); toast("Copied"); } catch { const a = document.createElement("textarea"); a.value = t; document.body.append(a); a.select(); document.execCommand("copy"); a.remove(); toast("Copied"); } }
-document.addEventListener("click", (e) => { const q = e.target.closest("[data-pcp]"); if (q) { copyText(q.parentElement.querySelector("code").textContent); q.textContent = "Copied"; setTimeout(() => { q.textContent = "Copy"; }, 1500); return; } const b = e.target.closest("[data-cp]"); if (!b) return; const m = conv?.messages.find((x) => String(x.seq) === b.closest(".m")?.dataset.seq); if (m) copyText(b.dataset.cp === "md" ? m.text : plainText(m.text)); });
+document.addEventListener("click", async (e) => { const st = e.target.closest("[data-stop]"); if (st) { e.preventDefault(); e.stopPropagation(); st.disabled = true; st.textContent = "Stopping…"; try { await api(`/agents/${encodeURIComponent(st.dataset.stop)}/cancel`, "POST", {}); } catch (err) { toast(err.message); } return; } const q = e.target.closest("[data-pcp]"); if (q) { copyText(q.parentElement.querySelector("code").textContent); q.textContent = "Copied"; setTimeout(() => { q.textContent = "Copy"; }, 1500); return; } const b = e.target.closest("[data-cp]"); if (!b) return; const m = conv?.messages.find((x) => String(x.seq) === b.closest(".m")?.dataset.seq); if (m) copyText(b.dataset.cp === "md" ? m.text : plainText(m.text)); });
 document.addEventListener("copy", (e) => { // selecting text in a message and pressing Cmd/Ctrl+C gives plain text only
   const sel = getSelection(); if (!sel || sel.isCollapsed || !sel.anchorNode?.parentElement?.closest(".sc, #scroller")) return;
   e.clipboardData.setData("text/plain", sel.toString()); e.preventDefault();
