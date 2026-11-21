@@ -189,6 +189,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 .body code{background:var(--card);border:1px solid var(--line);color:var(--code);border-radius:4px;padding:1px 5px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .body .tbl{overflow-x:auto;margin:var(--s2) 0}.body table{border-collapse:collapse;font-size:13px;min-width:50%}.body th,.body td{border:1px solid var(--line);padding:var(--s1) var(--s2);text-align:left;vertical-align:top}.body th{background:var(--card);font-weight:600}.body p.h{font-weight:600;margin-top:var(--s2)}.body p.h1{font-size:17px}.body p.h2{font-size:15px}
 .body pre{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:var(--s3);overflow:auto;margin:var(--s1) 0}
+.body pre{position:relative}.pcp{position:absolute;top:6px;right:6px;font:12px/1 inherit;padding:4px 8px;border:1px solid var(--line);background:var(--bg);color:var(--mute);border-radius:var(--r1);cursor:pointer;user-select:none;opacity:.0}.body pre:hover .pcp{opacity:1}.pcp:hover{color:var(--fg)}
 .body pre code{background:none;border:0;color:var(--fg);padding:0}
 .body a{color:var(--link)}
 .at{background:hsl(var(--h,205) 88% 93%);color:hsl(var(--h,205) 62% 32%);border-radius:4px;padding:0 3px;font-weight:600}
@@ -430,7 +431,7 @@ const pairTitle = (t) => t.replace(" \u2194 ", " & "); // agent-to-agent titles 
 
 // ---- tiny markdown: code blocks, inline code, bold, italic, links, lists, @mentions ----
 function md(src) {
-  const blocks = []; let s = esc(src).replace(/```[a-z]*\n?([\s\S]*?)```/g, (_, c) => (blocks.push(`<pre><code>${c.replace(/\n$/, "")}</code></pre>`), `\u0000${blocks.length - 1}\u0000`));
+  const blocks = []; let s = esc(src).replace(/```[a-z]*\n?([\s\S]*?)```/g, (_, c) => (blocks.push(`<pre><button class="pcp" data-pcp title="Copy this block">Copy</button><code>${c.replace(/\n$/, "")}</code></pre>`), `\u0000${blocks.length - 1}\u0000`));
   const inline = (t) => t.replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>").replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<i>$2</i>")
     .replace(/\bhttps?:\/\/[^\s<)]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`)
     .replace(/(^|\s)@([a-z][a-z0-9-]*)/g, (m, p, n) => (names().includes(n) || n === "user") ? `${p}<span class="at" style="--h:${hue(n)}">@${n}</span>` : m);
@@ -582,7 +583,7 @@ function plainText(src) {
   }).filter((l) => l !== null).join("\n").replace(/\*\*([^*\n]+)\*\*/g, "$1").replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1$2").replace(/`([^`\n]+)`/g, "$1");
 }
 async function copyText(t) { try { await navigator.clipboard.writeText(t); toast("Copied"); } catch { const a = document.createElement("textarea"); a.value = t; document.body.append(a); a.select(); document.execCommand("copy"); a.remove(); toast("Copied"); } }
-document.addEventListener("click", (e) => { const b = e.target.closest("[data-cp]"); if (!b) return; const m = conv?.messages.find((x) => String(x.seq) === b.closest(".m")?.dataset.seq); if (m) copyText(b.dataset.cp === "md" ? m.text : plainText(m.text)); });
+document.addEventListener("click", (e) => { const q = e.target.closest("[data-pcp]"); if (q) { copyText(q.parentElement.querySelector("code").textContent); q.textContent = "Copied"; setTimeout(() => { q.textContent = "Copy"; }, 1500); return; } const b = e.target.closest("[data-cp]"); if (!b) return; const m = conv?.messages.find((x) => String(x.seq) === b.closest(".m")?.dataset.seq); if (m) copyText(b.dataset.cp === "md" ? m.text : plainText(m.text)); });
 document.addEventListener("copy", (e) => { // selecting text in a message and pressing Cmd/Ctrl+C gives plain text only
   const sel = getSelection(); if (!sel || sel.isCollapsed || !sel.anchorNode?.parentElement?.closest(".sc, #scroller")) return;
   e.clipboardData.setData("text/plain", sel.toString()); e.preventDefault();
